@@ -1,0 +1,38 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../../packages/core"
+    },
+    {
+      "path": "../../packages/policy"
+    },
+    {
+      "path": "../../packages/protocol-codex"
+    },
+    {
+      "path": "../../packages/shared-schemas"
+    },
+    {
+      "path": "../../packages/store"
+    },
+    {
+      "path": "../../packages/ui-components"
+    },
+    {
+      "path": "../../packages/ui-state"
+    },
+    {
+      "path": "../../packages/workers"
+    }
+  ]
+}
+

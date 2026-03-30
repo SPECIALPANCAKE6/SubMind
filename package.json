@@ -1,0 +1,19 @@
+{
+  "name": "submind",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "shell:output": "npm run build && node scripts/preview-shell.mjs",
+    "typecheck": "tsc -b --pretty",
+    "test": "vitest run packages/shared-schemas/test/shared-schemas.test.ts packages/workers/test/workers.test.ts packages/ui-state/test/ui-state.test.ts --pool=threads --poolOptions.threads.singleThread"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.1"
+  }
+}

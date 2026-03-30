@@ -1,0 +1,33 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./packages/shared-schemas"
+    },
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/protocol-codex"
+    },
+    {
+      "path": "./packages/store"
+    },
+    {
+      "path": "./packages/workers"
+    },
+    {
+      "path": "./packages/policy"
+    },
+    {
+      "path": "./packages/ui-state"
+    },
+    {
+      "path": "./packages/ui-components"
+    },
+    {
+      "path": "./apps/desktop"
+    }
+  ]
+}
+

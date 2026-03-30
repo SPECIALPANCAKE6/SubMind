@@ -1,0 +1,45 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": true,
+    "noEmitOnError": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@submind/core": [
+        "packages/core/src/index.ts"
+      ],
+      "@submind/policy": [
+        "packages/policy/src/index.ts"
+      ],
+      "@submind/protocol-codex": [
+        "packages/protocol-codex/src/index.ts"
+      ],
+      "@submind/shared-schemas": [
+        "packages/shared-schemas/src/index.ts"
+      ],
+      "@submind/store": [
+        "packages/store/src/index.ts"
+      ],
+      "@submind/ui-components": [
+        "packages/ui-components/src/index.ts"
+      ],
+      "@submind/ui-state": [
+        "packages/ui-state/src/index.ts"
+      ],
+      "@submind/workers": [
+        "packages/workers/src/index.ts"
+      ]
+    }
+  }
+}
