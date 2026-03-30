@@ -98,6 +98,11 @@ describe("ui-state", () => {
     expect(viewModel.sessions.sessions[0]?.title).toContain("Stack migration");
     expect(viewModel.memory.cards[0]?.summary).toContain("Desktop app must stay thin");
     expect(viewModel.guidance.cards[0]?.title).toContain("Land the stack migration");
+    expect(viewModel.guidance.posture.title).toContain("injected");
+    expect(viewModel.guidance.cards[0]?.linkedMemoryLabel).toContain("memory ref");
     expect(viewModel.actions.cards[0]?.title).toContain("Approve schema realignment");
+    expect(viewModel.actions.posture.title).toContain("open");
+    expect(viewModel.actions.mainView.title).toContain("Approve schema realignment");
+    expect(viewModel.actions.cards[0]?.contextLabel).toContain("guidance link");
   });
 });

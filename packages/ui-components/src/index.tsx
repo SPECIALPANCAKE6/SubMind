@@ -300,6 +300,8 @@ function GuidanceCard({
       <div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
         <span>{card.projectName}</span>
         <span>{card.source}</span>
+        <span>{card.linkedMemoryLabel}</span>
+        <span>{card.actionPressureLabel}</span>
       </div>
     </button>
   );
@@ -335,6 +337,9 @@ function ActionCard({
       <div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
         <span>{card.projectName}</span>
         <span>{card.state}</span>
+        <span>{card.owner}</span>
+        <span>{card.contextLabel}</span>
+        <span>{card.outcomeLabel}</span>
       </div>
     </button>
   );
@@ -449,7 +454,10 @@ function renderGuidance(
             />
           ))}
         </div>
-        <ToneCard card={viewModel.guidance.inspector} />
+        <div className="grid gap-4">
+          <ToneCard card={viewModel.guidance.posture} />
+          <ToneCard card={viewModel.guidance.inspector} />
+        </div>
       </div>
     </Surface>
   );
@@ -475,7 +483,11 @@ function renderActions(
             />
           ))}
         </div>
-        <ToneCard card={viewModel.actions.inspector} />
+        <div className="grid gap-4">
+          <ToneCard card={viewModel.actions.posture} />
+          <ToneCard card={viewModel.actions.mainView} />
+          <ToneCard card={viewModel.actions.inspector} />
+        </div>
       </div>
     </Surface>
   );

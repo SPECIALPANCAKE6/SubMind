@@ -7,6 +7,7 @@ import {
   createInitialShellUiState,
   createShellViewModel,
   selectShellAction,
+  selectShellGuidance,
   setShellPrimaryScreen,
   toggleShellProjectFocus
 } from "../../ui-state/src/index";
@@ -65,11 +66,39 @@ describe("ui-components", () => {
       })
     );
 
+    expect(markup).toContain("Action Checkpoint");
+    expect(markup).toContain("Action Main View");
     expect(markup).toContain("Audit / Context Inspector");
     expect(markup).toContain("Approve schema realignment for Project, Event, and ActionItem");
     expect(markup).toContain("project-focused");
     expect(markup).toContain("Actions");
-    expect(markup).toContain("risk");
+    expect(markup).toContain("guidance link");
+    expect(markup).toContain("actual outcome");
+  });
+
+  it("renders guidance posture and evidence labels in the guidance screen", () => {
+    const snapshot = createPreviewStoreSnapshot();
+    const state = setShellPrimaryScreen(
+      selectShellGuidance(
+        toggleShellProjectFocus(
+          createInitialShellUiState(snapshot),
+          "project-submind"
+        ),
+        "guidance-submind-stack"
+      ),
+      "guidance"
+    );
+    const markup = renderToStaticMarkup(
+      createElement(SubMindShell, {
+        viewModel: createShellViewModel(snapshot, state),
+        actions: noopActions
+      })
+    );
+
+    expect(markup).toContain("Guidance Checkpoint");
+    expect(markup).toContain("memory ref");
+    expect(markup).toContain("related action");
+    expect(markup).toContain("Decision Inspector");
   });
 
   it("keeps the shell on responsive grid classes instead of fixed-width markup", () => {

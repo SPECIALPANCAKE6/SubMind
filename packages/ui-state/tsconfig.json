@@ -14,6 +14,9 @@
     },
     {
       "path": "../shared-schemas"
+    },
+    {
+      "path": "../workers"
     }
   ]
 }

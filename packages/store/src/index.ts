@@ -313,8 +313,8 @@ export function createPreviewStoreSnapshot(): SubMindStoreSnapshot {
       description: "Operator-first control plane",
       summary:
         "Tauri operator console for work trace, memory, guidance, and action control.",
-      workspacePath: "C:/Users/xtrem/OneDrive/Documents/codecraft/SubMind",
-      repositoryRemote: "git@github.com:xtrem/SubMind.git",
+      workspacePath: "C:/Workspace/SubMind",
+      repositoryRemote: "git@github.com:example/SubMind.git",
       descriptors: ["desktop app", "tauri", "typescript", "operator-first"],
       createdAt: "2026-03-30T00:00:00.000Z",
       updatedAt: "2026-03-30T10:00:00.000Z"
@@ -327,8 +327,8 @@ export function createPreviewStoreSnapshot(): SubMindStoreSnapshot {
       description: "Cross-project operational visibility",
       summary:
         "Operational drift monitoring and escalation control for active systems.",
-      workspacePath: "C:/Workspaces/AtlasOps",
-      repositoryRemote: "git@github.com:xtrem/AtlasOps.git",
+      workspacePath: "C:/Workspace/AtlasOps",
+      repositoryRemote: "git@github.com:example/AtlasOps.git",
       descriptors: ["ops", "monitoring", "control-plane"],
       createdAt: "2026-03-29T00:00:00.000Z",
       updatedAt: "2026-03-30T08:10:00.000Z"
@@ -341,7 +341,7 @@ export function createPreviewStoreSnapshot(): SubMindStoreSnapshot {
       description: "Persistent intelligence traces",
       summary:
         "Archive and recall system for constraints, architecture notes, and memory.",
-      workspacePath: "C:/Workspaces/MemoryLedger",
+      workspacePath: "C:/Workspace/MemoryLedger",
       descriptors: ["memory", "archive", "knowledge"],
       createdAt: "2026-03-28T00:00:00.000Z",
       updatedAt: "2026-03-30T07:15:00.000Z"

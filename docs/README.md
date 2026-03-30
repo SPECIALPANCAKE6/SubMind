@@ -19,6 +19,8 @@ The current desktop shell is now on the new runtime stack:
 - `apps/desktop` is a thin `Tauri + React + Tailwind` shell host.
 - `packages/ui-state` owns the shell store and query helpers with `Zustand + TanStack Query`.
 - `packages/store` now carries `Drizzle` SQLite schema definitions plus the preview repository/snapshot layer.
+- `packages/workers` now projects checkpoint summaries that the Guidance screen can consume deterministically.
+- `packages/workers` now also projects checkpoint summaries that the Actions screen can consume deterministically.
 
 Project and shell behavior is now aligned around the newer primary-screen model:
 
@@ -28,6 +30,8 @@ Project and shell behavior is now aligned around the newer primary-screen model:
 - Primary screen switching now lives near the main content header for `Dashboard`, `Sessions`, `Memory`, `Guidance`, and `Actions`.
 - `Project` no longer stores UI selection/focus state. That state now lives in `ui-state`.
 - `Event` and `ActionItem` now use the richer direction expected by the updated `AGENTS.md`.
+- Guidance is now checkpoint-driven: the shell surfaces intervention posture, linked memory, and adjacent action pressure instead of only flat guidance cards.
+- Actions is now checkpoint-driven too: the shell surfaces queue posture, an action main view, and a deeper audit/context inspector instead of only an action list.
 
 ## Run Commands
 

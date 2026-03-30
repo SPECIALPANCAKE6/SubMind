@@ -19,6 +19,10 @@ import {
   type SubMindRepository,
   type SubMindStoreSnapshot
 } from "@submind/store";
+import {
+  createActionCheckpointSummary,
+  createGuidanceCheckpointSummary
+} from "@submind/workers";
 import type {
   ActionItem,
   GuidanceItem,
@@ -129,6 +133,8 @@ export interface GuidanceCardModel {
   state: GuidanceItem["state"];
   source: GuidanceItem["source"];
   projectName: string;
+  linkedMemoryLabel: string;
+  actionPressureLabel: string;
   isActive: boolean;
   isEmphasized: boolean;
 }
@@ -140,6 +146,9 @@ export interface ActionCardModel {
   state: ActionItem["state"];
   riskLevel: ActionItem["riskLevel"];
   projectName: string;
+  owner: ActionItem["owner"];
+  contextLabel: string;
+  outcomeLabel: string;
   isActive: boolean;
   isEmphasized: boolean;
 }
@@ -191,13 +200,16 @@ export interface SubMindShellViewModel {
   guidance: {
     title: string;
     body: string;
+    posture: ShellCardModel;
     cards: GuidanceCardModel[];
     inspector: ShellCardModel;
   };
   actions: {
     title: string;
     body: string;
+    posture: ShellCardModel;
     cards: ActionCardModel[];
+    mainView: ShellCardModel;
     inspector: ShellCardModel;
   };
 }
@@ -560,6 +572,10 @@ function createDashboardView(
   activeProject: Project | null
 ): SubMindShellViewModel["dashboard"] {
   const scope = getShellScope(state);
+  const guidanceCheckpoint = createGuidanceCheckpointSummary(
+    snapshot,
+    activeProject?.id ?? null
+  );
   const events = activeProject
     ? getProjectEvents(snapshot, activeProject.id)
     : [...snapshot.events].sort((left, right) => compareStrings(right.timestamp, left.timestamp));
@@ -607,10 +623,9 @@ function createDashboardView(
       createCard(
         "dashboard-guidance",
         "Guidance Snapshot",
-        leadGuidance?.title ?? "No guidance selected",
-        leadGuidance?.summary ??
-          "Guidance remains quiet until new context or risk shifts the intervention posture.",
-        "violet"
+        leadGuidance?.title ?? guidanceCheckpoint.recommendedTitle,
+        leadGuidance?.summary ?? guidanceCheckpoint.recommendedBody,
+        guidanceCheckpoint.highRiskActionCount > 0 ? "amber" : "violet"
       ),
       createCard(
         "dashboard-memory",
@@ -744,11 +759,70 @@ function createMemoryView(
   };
 }
 
+function getGuidanceMemoryItems(
+  snapshot: SubMindStoreSnapshot,
+  guidanceItem: GuidanceItem
+): MemoryItem[] {
+  return snapshot.memory.filter((memoryItem) =>
+    guidanceItem.linkedMemoryItemIds.includes(memoryItem.id)
+  );
+}
+
+function getGuidanceActionItems(
+  snapshot: SubMindStoreSnapshot,
+  guidanceItem: GuidanceItem
+): ActionItem[] {
+  return snapshot.actions.filter((actionItem) => {
+    if (actionItem.projectId !== guidanceItem.projectId) {
+      return false;
+    }
+
+    if (guidanceItem.threadId && actionItem.threadId === guidanceItem.threadId) {
+      return true;
+    }
+
+    if (guidanceItem.sessionId && actionItem.sessionId === guidanceItem.sessionId) {
+      return true;
+    }
+
+    return !guidanceItem.threadId && !guidanceItem.sessionId;
+  });
+}
+
+function getGuidanceSupportCount(
+  snapshot: SubMindStoreSnapshot,
+  guidanceItem: GuidanceItem
+): number {
+  return snapshot.events.filter((event) => {
+    if (event.guidanceItemId === guidanceItem.id) {
+      return true;
+    }
+
+    if (event.projectId !== guidanceItem.projectId) {
+      return false;
+    }
+
+    if (guidanceItem.threadId && event.threadId === guidanceItem.threadId) {
+      return true;
+    }
+
+    if (guidanceItem.sessionId && event.sessionId === guidanceItem.sessionId) {
+      return true;
+    }
+
+    return false;
+  }).length;
+}
+
 function createGuidanceView(
   snapshot: SubMindStoreSnapshot,
   state: ShellUiState,
   activeProject: Project | null
 ): SubMindShellViewModel["guidance"] {
+  const guidanceCheckpoint = createGuidanceCheckpointSummary(
+    snapshot,
+    activeProject?.id ?? null
+  );
   const guidancePool = activeProject
     ? [
         ...getProjectGuidanceItems(snapshot, activeProject.id),
@@ -756,36 +830,225 @@ function createGuidanceView(
       ]
     : [...snapshot.guidance];
 
-  const cards = guidancePool.map((guidanceItem) => ({
-    guidanceId: guidanceItem.id,
-    title: guidanceItem.title,
-    summary: guidanceItem.summary,
-    state: guidanceItem.state,
-    source: guidanceItem.source,
-    projectName: getProjectById(snapshot, guidanceItem.projectId)?.name ?? "Unknown project",
-    isActive: state.activeGuidanceId === guidanceItem.id,
-    isEmphasized: activeProject?.id === guidanceItem.projectId
-  }));
+  const cards = guidancePool.map((guidanceItem) => {
+    const linkedMemory = getGuidanceMemoryItems(snapshot, guidanceItem);
+    const relatedActions = getGuidanceActionItems(snapshot, guidanceItem);
+
+    return {
+      guidanceId: guidanceItem.id,
+      title: guidanceItem.title,
+      summary: guidanceItem.summary,
+      state: guidanceItem.state,
+      source: guidanceItem.source,
+      projectName:
+        getProjectById(snapshot, guidanceItem.projectId)?.name ?? "Unknown project",
+      linkedMemoryLabel: `${pluralize(linkedMemory.length, "memory ref")}`,
+      actionPressureLabel: `${pluralize(relatedActions.length, "related action")}`,
+      isActive: state.activeGuidanceId === guidanceItem.id,
+      isEmphasized: activeProject?.id === guidanceItem.projectId
+    };
+  });
 
   const activeGuidance =
     guidancePool.find((guidanceItem) => guidanceItem.id === state.activeGuidanceId) ??
     guidancePool[0];
+  const activeGuidanceMemory = activeGuidance
+    ? getGuidanceMemoryItems(snapshot, activeGuidance)
+    : [];
+  const activeGuidanceActions = activeGuidance
+    ? getGuidanceActionItems(snapshot, activeGuidance)
+    : [];
+  const activeGuidanceSupportCount = activeGuidance
+    ? getGuidanceSupportCount(snapshot, activeGuidance)
+    : 0;
+  const activeGuidanceTone = activeGuidanceActions.some((actionItem) =>
+    ["high", "critical"].includes(actionItem.riskLevel)
+  )
+    ? "amber"
+    : activeGuidance?.state === "injected"
+      ? "plum"
+      : "violet";
+  const linkedMemorySummary =
+    activeGuidanceMemory.length > 0
+      ? activeGuidanceMemory
+          .slice(0, 2)
+          .map((memoryItem) => memoryItem.summary)
+          .join(" / ")
+      : "No linked memory";
+  const relatedActionSummary =
+    activeGuidanceActions.length > 0
+      ? activeGuidanceActions
+          .slice(0, 2)
+          .map((actionItem) => actionItem.title)
+          .join(" / ")
+      : "No related actions";
 
   return {
     title: "Guidance",
     body:
-      "Transparent intervention surface showing what got injected, what stayed candidate, and why.",
+      "Checkpoint-driven intervention surface showing posture, evidence links, and adjacent action pressure.",
+    posture: createCard(
+      "guidance-posture",
+      "Guidance Checkpoint",
+      guidanceCheckpoint.recommendedTitle,
+      `${guidanceCheckpoint.recommendedBody} Dominant source: ${
+        guidanceCheckpoint.dominantSource
+      }. ${pluralize(guidanceCheckpoint.relatedActionCount, "action")} visible in scope.`,
+      guidanceCheckpoint.highRiskActionCount > 0
+        ? "amber"
+        : guidanceCheckpoint.injectedCount > 0
+          ? "plum"
+          : "violet"
+    ),
     cards,
     inspector: createCard(
       "guidance-inspector",
       "Decision Inspector",
       activeGuidance?.title ?? "Select guidance",
       activeGuidance
-        ? `${activeGuidance.summary} ${activeGuidance.rationale}`
+        ? `${activeGuidance.summary} ${activeGuidance.rationale} Linked memory: ${linkedMemorySummary}. Related actions: ${relatedActionSummary}. Support: ${pluralize(
+            activeGuidanceSupportCount,
+            "event"
+          )}.`
         : "Choose a guidance package to inspect its rationale and source posture.",
-      activeGuidance?.state === "injected" ? "plum" : "violet"
+      activeGuidanceTone
     )
   };
+}
+
+function getActionGuidanceItems(
+  snapshot: SubMindStoreSnapshot,
+  actionItem: ActionItem
+): GuidanceItem[] {
+  return snapshot.guidance.filter((guidanceItem) => {
+    if (guidanceItem.projectId !== actionItem.projectId) {
+      return false;
+    }
+
+    if (actionItem.threadId && guidanceItem.threadId === actionItem.threadId) {
+      return true;
+    }
+
+    if (actionItem.sessionId && guidanceItem.sessionId === actionItem.sessionId) {
+      return true;
+    }
+
+    return !actionItem.threadId && !actionItem.sessionId;
+  });
+}
+
+function getActionMemoryItems(
+  snapshot: SubMindStoreSnapshot,
+  actionItem: ActionItem
+): MemoryItem[] {
+  const memoryIds = new Set<string>();
+
+  for (const guidanceItem of getActionGuidanceItems(snapshot, actionItem)) {
+    for (const memoryId of guidanceItem.linkedMemoryItemIds) {
+      memoryIds.add(memoryId);
+    }
+  }
+
+  for (const event of snapshot.events) {
+    const matchesAction =
+      event.actionItemId === actionItem.id ||
+      (event.projectId === actionItem.projectId &&
+        ((actionItem.threadId && event.threadId === actionItem.threadId) ||
+          (!actionItem.threadId &&
+            actionItem.sessionId &&
+            event.sessionId === actionItem.sessionId)));
+
+    if (matchesAction && event.memoryItemId) {
+      memoryIds.add(event.memoryItemId);
+    }
+  }
+
+  return snapshot.memory.filter((memoryItem) => memoryIds.has(memoryItem.id));
+}
+
+function getActionFileChanges(
+  snapshot: SubMindStoreSnapshot,
+  actionItem: ActionItem
+): ReturnType<typeof getProjectFileChanges> {
+  return snapshot.fileChanges.filter((fileChange) => {
+    if (fileChange.projectId !== actionItem.projectId) {
+      return false;
+    }
+
+    if (actionItem.threadId && fileChange.threadId === actionItem.threadId) {
+      return true;
+    }
+
+    if (actionItem.sessionId && fileChange.sessionId === actionItem.sessionId) {
+      return true;
+    }
+
+    return !actionItem.threadId && !actionItem.sessionId;
+  });
+}
+
+function getActionSupportCount(
+  snapshot: SubMindStoreSnapshot,
+  actionItem: ActionItem
+): number {
+  return snapshot.events.filter((event) => {
+    if (event.actionItemId === actionItem.id) {
+      return true;
+    }
+
+    if (event.projectId !== actionItem.projectId) {
+      return false;
+    }
+
+    if (actionItem.threadId && event.threadId === actionItem.threadId) {
+      return true;
+    }
+
+    if (actionItem.sessionId && event.sessionId === actionItem.sessionId) {
+      return true;
+    }
+
+    return false;
+  }).length;
+}
+
+function describeActionControls(actionItem: ActionItem): string {
+  switch (actionItem.state) {
+    case "pending":
+      return "approve, reject, or hold while more context is gathered";
+    case "in_progress":
+      return "let it continue, block it, or resolve once the outcome matches intent";
+    case "blocked":
+      return "unblock with a revised path, reject it, or keep it parked";
+    case "approved":
+      return "monitor the actual outcome and close the audit loop";
+    case "rejected":
+      return "document fallout or reopen if assumptions change";
+    case "resolved":
+      return "review the audit trail and keep the outcome on record";
+    default:
+      return "review the action and decide the next control step";
+  }
+}
+
+function getActionTone(actionItem: ActionItem | undefined): ShellCardModel["tone"] {
+  if (!actionItem) {
+    return "slate";
+  }
+
+  if (["high", "critical"].includes(actionItem.riskLevel)) {
+    return "amber";
+  }
+
+  if (actionItem.state === "pending" || actionItem.state === "in_progress") {
+    return "plum";
+  }
+
+  if (actionItem.state === "blocked") {
+    return "violet";
+  }
+
+  return "slate";
 }
 
 function createActionsView(
@@ -793,6 +1056,10 @@ function createActionsView(
   state: ShellUiState,
   activeProject: Project | null
 ): SubMindShellViewModel["actions"] {
+  const actionCheckpoint = createActionCheckpointSummary(
+    snapshot,
+    activeProject?.id ?? null
+  );
   const actionsPool = activeProject
     ? [
         ...getProjectActionItems(snapshot, activeProject.id),
@@ -800,36 +1067,147 @@ function createActionsView(
       ]
     : [...snapshot.actions];
 
-  const cards = actionsPool.map((actionItem) => ({
-    actionId: actionItem.id,
-    title: actionItem.title,
-    summary: actionItem.summary ?? actionItem.riskSummary,
-    state: actionItem.state,
-    riskLevel: actionItem.riskLevel,
-    projectName: getProjectById(snapshot, actionItem.projectId)?.name ?? "Unknown project",
-    isActive: state.activeActionId === actionItem.id,
-    isEmphasized: activeProject?.id === actionItem.projectId
-  }));
+  const cards = actionsPool.map((actionItem) => {
+    const relatedGuidance = getActionGuidanceItems(snapshot, actionItem);
+    const relatedFiles = getActionFileChanges(snapshot, actionItem);
+
+    return {
+      actionId: actionItem.id,
+      title: actionItem.title,
+      summary: actionItem.summary ?? actionItem.riskSummary,
+      state: actionItem.state,
+      riskLevel: actionItem.riskLevel,
+      projectName:
+        getProjectById(snapshot, actionItem.projectId)?.name ?? "Unknown project",
+      owner: actionItem.owner,
+      contextLabel: `${pluralize(relatedGuidance.length, "guidance link")} / ${pluralize(
+        relatedFiles.length,
+        "file change"
+      )}`,
+      outcomeLabel: actionItem.actualOutcome
+        ? "actual outcome captured"
+        : actionItem.expectedOutcome
+          ? "expected outcome set"
+          : "outcome pending",
+      isActive: state.activeActionId === actionItem.id,
+      isEmphasized: activeProject?.id === actionItem.projectId
+    };
+  });
 
   const activeAction =
     actionsPool.find((actionItem) => actionItem.id === state.activeActionId) ??
     actionsPool[0];
+  const activeActionGuidance = activeAction
+    ? getActionGuidanceItems(snapshot, activeAction)
+    : [];
+  const activeActionMemory = activeAction
+    ? getActionMemoryItems(snapshot, activeAction)
+    : [];
+  const activeActionFiles = activeAction
+    ? getActionFileChanges(snapshot, activeAction)
+    : [];
+  const activeActionSupportCount = activeAction
+    ? getActionSupportCount(snapshot, activeAction)
+    : 0;
+  const activeActionSession = activeAction?.sessionId
+    ? snapshot.sessions.find((session) => session.id === activeAction.sessionId) ?? null
+    : null;
+  const activeActionThread = activeAction?.threadId
+    ? snapshot.threads.find((thread) => thread.id === activeAction.threadId) ?? null
+    : null;
+  const activeActionTask = activeAction
+    ? snapshot.tasks.find((task) =>
+        activeAction.threadId
+          ? task.threadId === activeAction.threadId
+          : activeAction.sessionId
+            ? task.sessionId === activeAction.sessionId
+            : false
+      ) ?? null
+    : null;
+  const activeActionGuidanceSummary =
+    activeActionGuidance.length > 0
+      ? activeActionGuidance
+          .slice(0, 2)
+          .map((guidanceItem) => guidanceItem.title)
+          .join(" / ")
+      : "No related guidance";
+  const activeActionMemorySummary =
+    activeActionMemory.length > 0
+      ? activeActionMemory
+          .slice(0, 2)
+          .map((memoryItem) => memoryItem.summary)
+          .join(" / ")
+      : "No linked memory";
+  const activeActionFileSummary =
+    activeActionFiles.length > 0
+      ? activeActionFiles
+          .slice(0, 2)
+          .map((fileChange) => fileChange.path)
+          .join(" / ")
+      : "No related file changes";
+  const activeActionScopeSummary = [
+    activeActionSession ? `Session: ${activeActionSession.summary ?? activeActionSession.id}` : null,
+    activeActionThread ? `Thread: ${activeActionThread.title}` : null,
+    activeActionTask ? `Task: ${activeActionTask.title}` : null
+  ]
+    .filter(Boolean)
+    .join(". ");
+  const activeActionTone = getActionTone(activeAction);
 
   return {
     title: "Actions",
     body:
-      "Inbox and approval surface with state, risk, expected outcome, and audit context kept explicit.",
+      "Inbox / approval / control / audit surface with queue pressure, explicit operator options, and deeper context on demand.",
+    posture: createCard(
+      "action-posture",
+      "Action Checkpoint",
+      actionCheckpoint.recommendedTitle,
+      `${actionCheckpoint.recommendedBody} ${pluralize(
+        actionCheckpoint.relatedGuidanceCount,
+        "guidance package"
+      )}, ${pluralize(actionCheckpoint.relatedMemoryCount, "memory item")}, and ${pluralize(
+        actionCheckpoint.relatedFileChangeCount,
+        "file change"
+      )} are visible in scope.`,
+      actionCheckpoint.highRiskCount > 0
+        ? "amber"
+        : actionCheckpoint.openCount > 0
+          ? "plum"
+          : "slate"
+    ),
     cards,
+    mainView: createCard(
+      "action-main-view",
+      "Action Main View",
+      activeAction?.title ?? "Select an action",
+      activeAction
+        ? `${activeAction.summary ?? activeAction.riskSummary} Options: ${describeActionControls(
+            activeAction
+          )}. Expected outcome: ${
+            activeAction.expectedOutcome ?? "No expected outcome recorded yet."
+          }`
+        : "Choose an action to promote it into the main control surface.",
+      activeActionTone
+    ),
     inspector: createCard(
       "action-inspector",
       "Audit / Context Inspector",
       activeAction?.title ?? "Select an action",
       activeAction
-        ? `${activeAction.riskSummary} Expected outcome: ${
+        ? `Would happen: ${
             activeAction.expectedOutcome ?? "No expected outcome recorded."
-          }`
+          } Did happen: ${
+            activeAction.actualOutcome ?? "No actual outcome recorded yet."
+          } Scope: ${activeActionScopeSummary || "Scope detail still forming."} Related guidance: ${activeActionGuidanceSummary}. Memory: ${activeActionMemorySummary}. Files: ${activeActionFileSummary}. Support: ${pluralize(
+            activeActionSupportCount,
+            "event"
+          )}. Risk factors: ${
+            activeAction.riskFactors.length > 0
+              ? activeAction.riskFactors.join(", ")
+              : "none recorded"
+          }.`
         : "Choose an action to inspect its risk, outcome intent, and related work context.",
-      activeAction?.riskLevel === "high" ? "amber" : "slate"
+      activeActionTone
     )
   };
 }
