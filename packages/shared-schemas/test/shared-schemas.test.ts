@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   coreEntityKinds,
+  eventOrigins,
+  eventNodeCategories,
   eventTaxonomy,
   projectStackInteractionRules,
   projectStackTransitions
@@ -33,14 +35,30 @@ describe("shared schemas", () => {
       "subagent",
       "system_user"
     ]);
+
+    expect(eventOrigins).toEqual([
+      "codex",
+      "submind",
+      "subagent",
+      "system",
+      "user"
+    ]);
+
+    expect(eventNodeCategories).toEqual([
+      "anchor",
+      "change",
+      "cognitive",
+      "control",
+      "delegation",
+      "marker"
+    ]);
   });
 
   it("preserves the project stack interaction model", () => {
     expect(projectStackInteractionRules).toEqual({
       select: "single_click",
-      focus: "explicit_action"
+      focus: "explicit_action_or_double_click"
     });
     expect(projectStackTransitions.focused).toEqual(["selected"]);
   });
 });
-

@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
+    "jsx": "react-jsx",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
@@ -32,7 +33,7 @@
         "packages/store/src/index.ts"
       ],
       "@submind/ui-components": [
-        "packages/ui-components/src/index.ts"
+        "packages/ui-components/src/index.tsx"
       ],
       "@submind/ui-state": [
         "packages/ui-state/src/index.ts"

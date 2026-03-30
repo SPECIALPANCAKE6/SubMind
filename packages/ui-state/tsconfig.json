@@ -10,8 +10,10 @@
   ],
   "references": [
     {
+      "path": "../store"
+    },
+    {
       "path": "../shared-schemas"
     }
   ]
 }
-

@@ -10,6 +10,9 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
+  },
+  "dependencies": {
+    "@submind/ui-state": "0.1.0",
+    "react": "^19.1.1"
   }
 }
-

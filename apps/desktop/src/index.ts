@@ -1,35 +1,61 @@
 import { describeRuntimeContext } from "@submind/core";
 import { starterSubagents } from "@submind/policy";
 import { createEmptyCodexProtocolEnvelope } from "@submind/protocol-codex";
-import type { Project } from "@submind/shared-schemas";
-import { createEmptyStoreSnapshot } from "@submind/store";
 import {
-  focusViewPanels,
-  operatorViewPanels,
-  tabViewPanels
-} from "@submind/ui-components";
-import { shellViews } from "@submind/ui-state";
+  createPreviewRepository,
+  createPreviewStoreSnapshot,
+  getPrimarySessionThread,
+  getProjectSessions,
+  type SubMindRepository,
+  type SubMindStoreSnapshot
+} from "@submind/store";
+import {
+  createInitialShellUiState,
+  layoutModes,
+  primaryScreens
+} from "@submind/ui-state";
 import { createWorkerPlan } from "@submind/workers";
 
 export const desktopShellManifest = {
   name: "SubMind Desktop",
-  views: shellViews,
-  panels: {
-    operator: operatorViewPanels,
-    focus: focusViewPanels,
-    tab: tabViewPanels
-  }
+  layoutModes,
+  primaryScreens
 } as const;
 
-export function createDesktopBootstrap(project: Project) {
+export function createDesktopBootstrap(
+  snapshot: SubMindStoreSnapshot,
+  repository: SubMindRepository
+) {
+  const initialUiState = createInitialShellUiState(snapshot);
+  const activeProject =
+    snapshot.projects.find(
+      (project) => project.id === initialUiState.selectedProjectId
+    ) ?? null;
+  const activeSession = activeProject
+    ? getProjectSessions(snapshot, activeProject.id)[0] ?? null
+    : null;
+  const activeThread = activeSession
+    ? getPrimarySessionThread(snapshot, activeSession.id)
+    : null;
+
   return {
     shell: desktopShellManifest,
-    runtime: describeRuntimeContext({ project }),
-    store: createEmptyStoreSnapshot(),
+    initialUiState,
+    repository,
+    runtime: describeRuntimeContext({
+      scope: initialUiState.focusedProjectId ? "project" : "global",
+      ...(activeProject ? { project: activeProject } : {}),
+      ...(activeSession ? { activeSession } : {}),
+      ...(activeThread ? { activeThread } : {})
+    }),
+    store: snapshot,
     protocol: createEmptyCodexProtocolEnvelope(
-      "pending-session",
-      "pending-thread",
-      project.updatedAt
+      activeSession?.id ?? "pending-session",
+      activeThread?.id ?? "pending-thread",
+      activeThread?.updatedAt ??
+        activeSession?.updatedAt ??
+        activeProject?.updatedAt ??
+        new Date().toISOString()
     ),
     checkpoints: {
       event: createWorkerPlan("event"),
@@ -40,4 +66,11 @@ export function createDesktopBootstrap(project: Project) {
     },
     availableSubagents: starterSubagents
   };
+}
+
+export function createDesktopPreviewBootstrap() {
+  const snapshot = createPreviewStoreSnapshot();
+  const repository = createPreviewRepository(snapshot);
+
+  return createDesktopBootstrap(snapshot, repository);
 }

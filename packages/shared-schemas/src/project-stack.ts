@@ -13,6 +13,5 @@ export const projectStackTransitions: Record<
 
 export const projectStackInteractionRules = {
   select: "single_click",
-  focus: "explicit_action"
+  focus: "explicit_action_or_double_click"
 } as const;
-

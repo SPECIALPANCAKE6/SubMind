@@ -1,5 +1,8 @@
-import type { EventTaxonomy } from "./events.js";
-import type { ProjectStackState } from "./project-stack.js";
+import type {
+  EventNodeCategory,
+  EventOrigin,
+  EventTaxonomy
+} from "./events.js";
 
 export const coreEntityKinds = [
   "Profile",
@@ -36,7 +39,10 @@ export interface Project extends BaseEntity {
   profileId: string;
   name: string;
   description?: string;
-  state: ProjectStackState;
+  summary?: string;
+  workspacePath?: string;
+  repositoryRemote?: string;
+  descriptors: string[];
 }
 
 export interface Session extends BaseEntity {
@@ -44,6 +50,7 @@ export interface Session extends BaseEntity {
   profileId: string;
   projectId: string;
   status: "active" | "idle" | "completed";
+  summary?: string;
   startedAt: ISODateString;
   completedAt?: ISODateString;
 }
@@ -54,6 +61,7 @@ export interface Thread extends BaseEntity {
   projectId: string;
   title: string;
   status: "open" | "idle" | "closed";
+  summary?: string;
 }
 
 export interface Task extends BaseEntity {
@@ -64,39 +72,64 @@ export interface Task extends BaseEntity {
   title: string;
   status: "queued" | "active" | "blocked" | "completed";
   priority: "low" | "medium" | "high";
+  summary?: string;
 }
 
 export interface Event extends BaseEntity {
   kind: "Event";
-  sessionId: string;
-  threadId: string;
   projectId: string;
-  taxonomy: EventTaxonomy;
-  source: "codex" | "system" | "user" | "worker" | "subagent";
-  occurredAt: ISODateString;
-  payload: Record<string, unknown>;
+  sessionId?: string;
+  threadId?: string;
+  taskId?: string;
+  fileChangeId?: string;
+  guidanceItemId?: string;
+  actionItemId?: string;
+  memoryItemId?: string;
+  originType: EventOrigin;
+  eventType: string;
+  category: EventTaxonomy;
+  nodeCategory: EventNodeCategory;
+  timestamp: ISODateString;
+  summary: string;
+  metadata: Record<string, unknown>;
 }
 
 export interface FileChange extends BaseEntity {
   kind: "FileChange";
   eventId: string;
-  sessionId: string;
-  threadId: string;
   projectId: string;
+  sessionId?: string;
+  threadId?: string;
+  taskId?: string;
   path: string;
   changeType: "added" | "updated" | "deleted" | "renamed";
   fromPath?: string;
   summary?: string;
+  diffPreview?: string;
+  language?: string;
+  fileType: "source" | "config" | "asset" | "doc" | "other";
+  gitRef?: string;
 }
 
 export interface MemoryItem extends BaseEntity {
   kind: "MemoryItem";
-  projectId: string;
+  projectId?: string;
   sessionId?: string;
   threadId?: string;
-  category: "fact" | "decision" | "constraint" | "summary";
+  bucket:
+    | "project_context"
+    | "architecture_notes"
+    | "preferences"
+    | "pending_items"
+    | "gotchas"
+    | "workflow_patterns";
+  status: "active" | "archived" | "stale" | "superseded" | "draft";
+  summary: string;
   content: string;
-  importance: number;
+  confidence: number;
+  freshness: number;
+  isPinned: boolean;
+  isEdited: boolean;
 }
 
 export interface GuidanceItem extends BaseEntity {
@@ -105,9 +138,11 @@ export interface GuidanceItem extends BaseEntity {
   sessionId?: string;
   threadId?: string;
   title: string;
-  content: string;
-  status: "active" | "resolved" | "archived";
-  source: "operator" | "policy" | "system";
+  summary: string;
+  rationale: string;
+  state: "candidate" | "injected" | "suggested" | "suppressed" | "resolved";
+  source: "operator" | "policy" | "system" | "model";
+  linkedMemoryItemIds: string[];
 }
 
 export interface ActionItem extends BaseEntity {
@@ -116,8 +151,19 @@ export interface ActionItem extends BaseEntity {
   sessionId?: string;
   threadId?: string;
   title: string;
-  description?: string;
-  status: "open" | "in_progress" | "blocked" | "done";
+  summary?: string;
+  state:
+    | "pending"
+    | "in_progress"
+    | "approved"
+    | "rejected"
+    | "blocked"
+    | "resolved";
+  riskLevel: "low" | "medium" | "high" | "critical";
+  riskSummary: string;
+  riskFactors: string[];
+  expectedOutcome?: string;
+  actualOutcome?: string;
   owner: "operator" | "system" | "model";
 }
 

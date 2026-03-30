@@ -11,7 +11,13 @@
       "default": "./dist/index.js"
     }
   },
+  "scripts": {
+    "browser:build": "vite build --config vite.config.ts",
+    "browser:dev": "vite --config vite.config.ts",
+    "tauri:dev": "set \"PATH=%USERPROFILE%\\.cargo\\bin;%PATH%\" && tauri dev --config src-tauri/tauri.conf.json"
+  },
   "dependencies": {
+    "@tanstack/react-query": "^5.90.5",
     "@submind/core": "0.1.0",
     "@submind/policy": "0.1.0",
     "@submind/protocol-codex": "0.1.0",
@@ -19,7 +25,8 @@
     "@submind/store": "0.1.0",
     "@submind/ui-components": "0.1.0",
     "@submind/ui-state": "0.1.0",
-    "@submind/workers": "0.1.0"
+    "@submind/workers": "0.1.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
   }
 }
-

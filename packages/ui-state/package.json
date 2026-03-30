@@ -12,7 +12,9 @@
     }
   },
   "dependencies": {
-    "@submind/shared-schemas": "0.1.0"
+    "@tanstack/react-query": "^5.90.5",
+    "@submind/store": "0.1.0",
+    "@submind/shared-schemas": "0.1.0",
+    "zustand": "^5.0.8"
   }
 }
-

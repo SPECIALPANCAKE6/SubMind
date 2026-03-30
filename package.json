@@ -8,12 +8,24 @@
   ],
   "scripts": {
     "build": "tsc -b",
+    "desktop:browser:build": "npm run build && npm run --workspace @submind/desktop browser:build",
+    "desktop:browser:dev": "npm run build && npm run --workspace @submind/desktop browser:dev",
+    "desktop:tauri:dev": "npm run --workspace @submind/desktop tauri:dev",
+    "desktop:build": "npm run desktop:browser:build",
+    "desktop:dev": "npm run desktop:browser:dev",
     "shell:output": "npm run build && node scripts/preview-shell.mjs",
     "typecheck": "tsc -b --pretty",
-    "test": "vitest run packages/shared-schemas/test/shared-schemas.test.ts packages/workers/test/workers.test.ts packages/ui-state/test/ui-state.test.ts --pool=threads --poolOptions.threads.singleThread"
+    "test": "vitest run packages/shared-schemas/test/shared-schemas.test.ts packages/store/test/store.test.ts packages/workers/test/workers.test.ts packages/ui-state/test/ui-state.test.ts packages/ui-components/test/ui-components.test.ts --pool=threads --poolOptions.threads.singleThread"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.1.13",
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^19.1.16",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "tailwindcss": "^4.1.13",
     "typescript": "^5.8.3",
+    "vite": "^7.1.12",
     "vitest": "^3.1.1"
   }
 }
