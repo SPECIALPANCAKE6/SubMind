@@ -17,6 +17,8 @@
     "tauri:dev": "set \"PATH=%USERPROFILE%\\.cargo\\bin;%PATH%\" && tauri dev --config src-tauri/tauri.conf.json"
   },
   "dependencies": {
+    "@fontsource/ibm-plex-sans": "^5.2.6",
+    "@fontsource/sora": "^5.2.6",
     "@tanstack/react-query": "^5.90.5",
     "@submind/core": "0.1.0",
     "@submind/policy": "0.1.0",

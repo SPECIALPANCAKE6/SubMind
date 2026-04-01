@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { createPreviewStoreSnapshot } from "../../store/src/index";
 import {
+  clearShellProjectSelection,
   createInitialShellUiState,
   createShellViewModel,
   selectShellAction,
@@ -40,11 +41,35 @@ describe("ui-components", () => {
       })
     );
 
-    expect(markup).toContain("Top Command Strip");
-    expect(markup).toContain("Dashboard");
+    expect(markup).toContain('aria-label="Primary screens"');
     expect(markup).toContain("Atlas Ops");
-    expect(markup).toContain("Focus Selected");
-    expect(markup).toContain("SubMind / global selection");
+    expect(markup).toContain("sm-project-rail");
+    expect(markup).toContain('data-project-state="selected"');
+    expect(markup).toContain('data-dashboard-mode="selected"');
+    expect(markup).toContain('data-stack-mode="selected"');
+    expect(markup).toContain("Magnetized");
+    expect(markup).toContain("Focus");
+    expect(markup).toContain("sm-project-card__identity");
+    expect(markup).not.toContain(">Unfocus<");
+  });
+
+  it("renders the unselected dashboard mode without a committed project", () => {
+    const snapshot = createPreviewStoreSnapshot();
+    const markup = renderToStaticMarkup(
+      createElement(SubMindShell, {
+        viewModel: createShellViewModel(
+          snapshot,
+          clearShellProjectSelection(createInitialShellUiState(snapshot))
+        ),
+        actions: noopActions
+      })
+    );
+
+    expect(markup).toContain('data-dashboard-mode="unselected"');
+    expect(markup).toContain('data-stack-mode="unselected"');
+    expect(markup).toContain("Broad command center");
+    expect(markup).toContain("Global Dashboard");
+    expect(markup).not.toContain(">Unselected</span>");
   });
 
   it("renders the focused actions screen and risk inspector", () => {
@@ -72,6 +97,9 @@ describe("ui-components", () => {
     expect(markup).toContain("Approve schema realignment for Project, Event, and ActionItem");
     expect(markup).toContain("project-focused");
     expect(markup).toContain("Actions");
+    expect(markup).toContain('data-project-state="focused"');
+    expect(markup).toContain('data-stack-mode="focused"');
+    expect(markup).toContain("Exit Focus");
     expect(markup).toContain("guidance link");
     expect(markup).toContain("actual outcome");
   });
@@ -101,7 +129,7 @@ describe("ui-components", () => {
     expect(markup).toContain("Decision Inspector");
   });
 
-  it("keeps the shell on responsive grid classes instead of fixed-width markup", () => {
+  it("renders a dedicated operator shell with a left rail and right workspace", () => {
     const snapshot = createPreviewStoreSnapshot();
     const markup = renderToStaticMarkup(
       createElement(SubMindShell, {
@@ -113,8 +141,18 @@ describe("ui-components", () => {
       })
     );
 
-    expect(markup).toContain("xl:grid-cols-[minmax(19rem,23rem)_1fr]");
-    expect(markup).toContain("lg:grid-cols-2");
-    expect(markup).toContain("max-w-[1800px]");
+    expect(markup).toContain('class="sm-operator-shell"');
+    expect(markup).toContain('class="sm-project-rail"');
+    expect(markup).toContain('class="sm-workspace-shell min-w-0"');
+    expect(markup).toContain("sm-command-strip__zone sm-command-strip__zone--left");
+    expect(markup).toContain("sm-command-strip__zone sm-command-strip__zone--center sm-command-strip__controls");
+    expect(markup).toContain("sm-command-strip__zone sm-command-strip__zone--right sm-command-strip__metrics");
+    expect(markup).toContain("sm-workspace-frame");
+    expect(markup).toContain('class="sm-workspace-content"');
+    expect(markup).toContain("sm-tone-card--interactive");
+    expect(markup).toContain("Open Guidance");
+    expect(markup).toContain("sm-dashboard-deepening sm-dashboard-deepening--triple");
+    expect(markup).toContain("sm-workspace-header-grid");
+    expect(markup).toContain("max-w-[2400px]");
   });
 });

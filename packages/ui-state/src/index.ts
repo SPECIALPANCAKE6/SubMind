@@ -1233,8 +1233,8 @@ export function createShellViewModel(
       title: "SubMind",
       subtitle:
         scope === "project"
-          ? "Project-focused operator console with persistent work trace, memory, guidance, and action control."
-          : "Global operator console with project-aware magnetism and explicit focus control.",
+          ? "Project room with persistent trace, memory, guidance, and action control."
+          : "Global operator console with project-aware scope and active context.",
       metrics: [
         { label: "Scope", value: scope === "project" ? "project-focused" : "global" },
         { label: "Projects", value: String(snapshot.projects.length) },
