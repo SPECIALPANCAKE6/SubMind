@@ -11,7 +11,9 @@
   "references": [
     {
       "path": "../shared-schemas"
+    },
+    {
+      "path": "../store"
     }
   ]
 }
-

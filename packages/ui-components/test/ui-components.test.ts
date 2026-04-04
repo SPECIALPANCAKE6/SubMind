@@ -1,5 +1,5 @@
+import { createRequire } from "node:module";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { createPreviewStoreSnapshot } from "../../store/src/index";
@@ -13,6 +13,13 @@ import {
   toggleShellProjectFocus
 } from "../../ui-state/src/index";
 import { SubMindShell } from "../src/index";
+
+const requireFromDesktop = createRequire(
+  new URL("../../../apps/desktop/package.json", import.meta.url)
+);
+const { renderToStaticMarkup } = requireFromDesktop(
+  "react-dom/server"
+) as typeof import("react-dom/server");
 
 describe("ui-components", () => {
   const noopActions = {

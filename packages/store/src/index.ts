@@ -26,8 +26,41 @@ export interface SubMindStoreSnapshot {
   actions: ActionItem[];
 }
 
+export interface ActionStateTransitionInput {
+  actionId: string;
+  nextState: ActionItem["state"];
+  actualOutcome?: string;
+  actor?: ActionItem["owner"];
+  timestamp?: string;
+}
+
+export interface EventHistoryQueryInput {
+  projectId?: string;
+  sessionId?: string;
+  threadId?: string;
+  taskId?: string;
+  actionItemId?: string;
+  guidanceItemId?: string;
+  memoryItemId?: string;
+  categories?: Event["category"][];
+  limit?: number;
+}
+
+export interface FileChangeHistoryQueryInput {
+  projectId?: string;
+  sessionId?: string;
+  threadId?: string;
+  taskId?: string;
+  eventId?: string;
+  limit?: number;
+}
+
 export interface SubMindRepository {
   getSnapshot(): Promise<SubMindStoreSnapshot>;
+  getEventHistory(input?: EventHistoryQueryInput): Promise<Event[]>;
+  getFileChangeHistory(input?: FileChangeHistoryQueryInput): Promise<FileChange[]>;
+  getActionHistory(actionId: string, limit?: number): Promise<Event[]>;
+  transitionAction(input: ActionStateTransitionInput): Promise<ActionItem>;
 }
 
 const sessionStatusRank: Record<Session["status"], number> = {
@@ -124,6 +157,12 @@ function sortEvents(items: Event[]): Event[] {
   );
 }
 
+function sortFileChanges(items: FileChange[]): FileChange[] {
+  return [...items].sort((left, right) =>
+    compareDescending(left.updatedAt, right.updatedAt)
+  );
+}
+
 function sortMemory(items: MemoryItem[]): MemoryItem[] {
   return [...items].sort((left, right) => {
     if (left.isPinned !== right.isPinned) {
@@ -169,18 +208,203 @@ function sortActions(items: ActionItem[]): ActionItem[] {
   });
 }
 
+function createActionTransitionEvent(
+  action: ActionItem,
+  nextState: ActionItem["state"],
+  timestamp: string,
+  actor: ActionItem["owner"]
+): Event {
+  return {
+    kind: "Event",
+    id: `event-action-${action.id}-${timestamp.replaceAll(/[^0-9]/g, "")}`,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    projectId: action.projectId,
+    ...(action.sessionId ? { sessionId: action.sessionId } : {}),
+    ...(action.threadId ? { threadId: action.threadId } : {}),
+    actionItemId: action.id,
+    originType: "submind",
+    eventType: "action-state-transition",
+    category: "action",
+    nodeCategory: "control",
+    timestamp,
+    summary: `${action.title} moved from ${action.state} to ${nextState}.`,
+    metadata: {
+      actionId: action.id,
+      actor,
+      previousState: action.state,
+      nextState
+    }
+  };
+}
+
 export function cloneStoreSnapshot(
   snapshot: SubMindStoreSnapshot
 ): SubMindStoreSnapshot {
   return structuredClone(snapshot);
 }
 
+export function queryEventHistoryFromSnapshot(
+  snapshot: SubMindStoreSnapshot,
+  input: EventHistoryQueryInput = {}
+): Event[] {
+  const items = sortEvents(
+    snapshot.events.filter((event) => {
+      if (input.projectId && event.projectId !== input.projectId) {
+        return false;
+      }
+
+      if (input.sessionId && event.sessionId !== input.sessionId) {
+        return false;
+      }
+
+      if (input.threadId && event.threadId !== input.threadId) {
+        return false;
+      }
+
+      if (input.taskId && event.taskId !== input.taskId) {
+        return false;
+      }
+
+      if (input.actionItemId && event.actionItemId !== input.actionItemId) {
+        return false;
+      }
+
+      if (
+        input.guidanceItemId &&
+        event.guidanceItemId !== input.guidanceItemId
+      ) {
+        return false;
+      }
+
+      if (input.memoryItemId && event.memoryItemId !== input.memoryItemId) {
+        return false;
+      }
+
+      if (
+        input.categories &&
+        input.categories.length > 0 &&
+        !input.categories.includes(event.category)
+      ) {
+        return false;
+      }
+
+      return true;
+    })
+  );
+
+  if (!input.limit || input.limit <= 0) {
+    return items;
+  }
+
+  return items.slice(0, input.limit);
+}
+
+export function queryFileChangeHistoryFromSnapshot(
+  snapshot: SubMindStoreSnapshot,
+  input: FileChangeHistoryQueryInput = {}
+): FileChange[] {
+  const items = sortFileChanges(
+    snapshot.fileChanges.filter((fileChange) => {
+      if (input.projectId && fileChange.projectId !== input.projectId) {
+        return false;
+      }
+
+      if (input.sessionId && fileChange.sessionId !== input.sessionId) {
+        return false;
+      }
+
+      if (input.threadId && fileChange.threadId !== input.threadId) {
+        return false;
+      }
+
+      if (input.taskId && fileChange.taskId !== input.taskId) {
+        return false;
+      }
+
+      if (input.eventId && fileChange.eventId !== input.eventId) {
+        return false;
+      }
+
+      return true;
+    })
+  );
+
+  if (!input.limit || input.limit <= 0) {
+    return items;
+  }
+
+  return items.slice(0, input.limit);
+}
+
 export function createPreviewRepository(
   snapshot: SubMindStoreSnapshot = createPreviewStoreSnapshot()
 ): SubMindRepository {
+  let liveSnapshot = cloneStoreSnapshot(snapshot);
+
   return {
     async getSnapshot() {
-      return cloneStoreSnapshot(snapshot);
+      return cloneStoreSnapshot(liveSnapshot);
+    },
+    async getEventHistory(input = {}) {
+      return queryEventHistoryFromSnapshot(liveSnapshot, input);
+    },
+    async getFileChangeHistory(input = {}) {
+      return queryFileChangeHistoryFromSnapshot(liveSnapshot, input);
+    },
+    async getActionHistory(actionId, limit) {
+      return queryEventHistoryFromSnapshot(
+        liveSnapshot,
+        limit === undefined
+          ? { actionItemId: actionId }
+          : { actionItemId: actionId, limit }
+      );
+    },
+    async transitionAction(input) {
+      const actionIndex = liveSnapshot.actions.findIndex(
+        (actionItem) => actionItem.id === input.actionId
+      );
+
+      if (actionIndex === -1) {
+        throw new Error(`Action item "${input.actionId}" was not found.`);
+      }
+
+      const previousAction = liveSnapshot.actions[actionIndex];
+
+      if (!previousAction) {
+        throw new Error(`Action item "${input.actionId}" was not found.`);
+      }
+
+      const timestamp = input.timestamp ?? new Date().toISOString();
+      const actor = input.actor ?? "operator";
+      const nextActualOutcome =
+        input.actualOutcome ?? previousAction.actualOutcome;
+      const nextAction: ActionItem = {
+        ...previousAction,
+        state: input.nextState,
+        ...(nextActualOutcome
+          ? { actualOutcome: nextActualOutcome }
+          : {}),
+        updatedAt: timestamp
+      };
+
+      const nextActions = [...liveSnapshot.actions];
+      nextActions[actionIndex] = nextAction;
+      liveSnapshot = {
+        ...liveSnapshot,
+        actions: sortActions(nextActions),
+        events: sortEvents([
+          createActionTransitionEvent(
+            previousAction,
+            input.nextState,
+            timestamp,
+            actor
+          ),
+          ...liveSnapshot.events
+        ])
+      };
+
+      return structuredClone(nextAction);
     }
   };
 }
@@ -274,9 +498,7 @@ export function getProjectFileChanges(
   snapshot: SubMindStoreSnapshot,
   projectId: string
 ): FileChange[] {
-  return [...snapshot.fileChanges]
-    .filter((fileChange) => fileChange.projectId === projectId)
-    .sort((left, right) => compareDescending(left.updatedAt, right.updatedAt));
+  return queryFileChangeHistoryFromSnapshot(snapshot, { projectId });
 }
 
 export function getPrimarySessionThread(
@@ -844,3 +1066,9 @@ export function createPreviewStoreSnapshot(): SubMindStoreSnapshot {
     actions
   };
 }
+
+export {
+  createSqliteRepository,
+  subMindSqliteDatabasePath,
+  syncRuntimeSnapshotIntoDatabase
+} from "./sqlite-repository.js";

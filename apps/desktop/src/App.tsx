@@ -1,9 +1,9 @@
 import { useEffect } from "react";
 import { SubMindShell } from "@submind/ui-components";
 import { createShellViewModel, useShellSnapshotQuery, useShellStore } from "@submind/ui-state";
-import { createDesktopPreviewBootstrap } from "./index.js";
+import { createDesktopRepository } from "./index.js";
 
-const previewBootstrap = createDesktopPreviewBootstrap();
+const desktopRepository = createDesktopRepository();
 
 function LoadingState() {
   return (
@@ -42,7 +42,7 @@ function ErrorState({ message }: { message: string }) {
 }
 
 export function DesktopApp() {
-  const snapshotQuery = useShellSnapshotQuery(previewBootstrap.repository);
+  const snapshotQuery = useShellSnapshotQuery(desktopRepository);
   const initializeFromSnapshot = useShellStore(
     (state) => state.initializeFromSnapshot
   );

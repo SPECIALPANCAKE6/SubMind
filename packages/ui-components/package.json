@@ -12,7 +12,8 @@
     }
   },
   "dependencies": {
-    "@submind/ui-state": "0.1.0",
-    "react": "^19.1.1"
+    "@submind/ui-state": "workspace:*",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
   }
 }

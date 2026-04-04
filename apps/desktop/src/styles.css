@@ -649,10 +649,12 @@
 
   .sm-dashboard-deepening .sm-tone-card__title {
     -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
 
   .sm-dashboard-deepening .sm-tone-card__body {
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     font-size: clamp(0.78rem, 0.2vw + 0.74rem, 0.92rem);
     line-height: 1.42;
   }
@@ -821,6 +823,7 @@
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 4;
+    line-clamp: 4;
     overflow: hidden;
   }
 
@@ -829,6 +832,7 @@
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     overflow: hidden;
   }
 
@@ -1775,6 +1779,7 @@
     .sm-dashboard-primary .sm-tone-card__body,
     .sm-dashboard-deepening .sm-tone-card__body {
       -webkit-line-clamp: 3;
+      line-clamp: 3;
     }
   }
 

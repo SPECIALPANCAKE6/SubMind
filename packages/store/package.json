@@ -12,7 +12,7 @@
     }
   },
   "dependencies": {
-    "@submind/shared-schemas": "0.1.0",
+    "@submind/shared-schemas": "workspace:*",
     "drizzle-orm": "^0.44.7"
   }
 }

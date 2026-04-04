@@ -18,7 +18,7 @@ The current desktop shell is now on the new runtime stack:
 
 - `apps/desktop` is a thin `Tauri + React + Tailwind` shell host.
 - `packages/ui-state` owns the shell store and query helpers with `Zustand + TanStack Query`.
-- `packages/store` now carries `Drizzle` SQLite schema definitions plus the preview repository/snapshot layer.
+- `packages/store` now carries `Drizzle` SQLite schema definitions plus the preview repository/snapshot layer and the first real SQLite-backed repository path.
 - `packages/workers` now projects checkpoint summaries that the Guidance screen can consume deterministically.
 - `packages/workers` now also projects checkpoint summaries that the Actions screen can consume deterministically.
 
@@ -48,6 +48,8 @@ Project and shell behavior is now aligned around the newer primary-screen model:
 
 - `apps/desktop` is now wired as a minimal Tauri app under `apps/desktop/src-tauri`.
 - The native dev path uses the same React browser shell as its frontend via Tauri's `beforeDevCommand`.
+- Native desktop mode now boots a local SQLite-backed repository through the Tauri SQL plugin and seeds it from the preview snapshot on first run.
+- Browser preview still uses the transient preview repository so shell iteration does not depend on the native runtime.
 - This repository does not set up installers or packaging workflows yet.
 - Native Tauri dev requires a local Rust toolchain on Windows because Tauri compiles a Rust host binary.
 - The workspace Tauri dev script now prepends the standard Windows Cargo path (`%USERPROFILE%\\.cargo\\bin`) before launch to reduce shell-specific PATH issues.

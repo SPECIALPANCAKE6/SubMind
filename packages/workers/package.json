@@ -12,7 +12,7 @@
     }
   },
   "dependencies": {
-    "@submind/store": "0.1.0",
-    "@submind/shared-schemas": "0.1.0"
+    "@submind/store": "workspace:*",
+    "@submind/shared-schemas": "workspace:*"
   }
 }
