@@ -111,6 +111,12 @@ export const memoryItemsTable = sqliteTable("memory_items", {
   content: text("content").notNull(),
   confidence: text("confidence").notNull(),
   freshness: text("freshness").notNull(),
+  curationState: text("curation_state").notNull(),
+  sourceEventIdsJson: text("source_event_ids_json").notNull(),
+  sourceFileChangeIdsJson: text("source_file_change_ids_json").notNull(),
+  linkedActionItemIdsJson: text("linked_action_item_ids_json").notNull(),
+  linkedGuidanceItemIdsJson: text("linked_guidance_item_ids_json").notNull(),
+  changeSummary: text("change_summary"),
   isPinned: text("is_pinned").notNull(),
   isEdited: text("is_edited").notNull()
 });
@@ -127,7 +133,12 @@ export const guidanceItemsTable = sqliteTable("guidance_items", {
   rationale: text("rationale").notNull(),
   state: text("state").notNull(),
   source: text("source").notNull(),
-  linkedMemoryItemIdsJson: text("linked_memory_item_ids_json").notNull()
+  confidence: text("confidence").notNull(),
+  evidenceSummary: text("evidence_summary").notNull(),
+  policySummary: text("policy_summary").notNull(),
+  linkedMemoryItemIdsJson: text("linked_memory_item_ids_json").notNull(),
+  linkedEventIdsJson: text("linked_event_ids_json").notNull(),
+  linkedActionItemIdsJson: text("linked_action_item_ids_json").notNull()
 });
 
 export const actionItemsTable = sqliteTable("action_items", {

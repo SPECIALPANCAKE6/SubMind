@@ -34,6 +34,18 @@ export interface ActionStateTransitionInput {
   timestamp?: string;
 }
 
+export interface MemoryCurationInput {
+  memoryId: string;
+  summary: string;
+  content: string;
+  status: MemoryItem["status"];
+  isPinned: boolean;
+  curationState: Extract<MemoryItem["curationState"], "confirmed" | "edited">;
+  changeSummary?: string;
+  actor?: ActionItem["owner"];
+  timestamp?: string;
+}
+
 export interface EventHistoryQueryInput {
   projectId?: string;
   sessionId?: string;
@@ -61,6 +73,7 @@ export interface SubMindRepository {
   getFileChangeHistory(input?: FileChangeHistoryQueryInput): Promise<FileChange[]>;
   getActionHistory(actionId: string, limit?: number): Promise<Event[]>;
   transitionAction(input: ActionStateTransitionInput): Promise<ActionItem>;
+  updateMemoryItem(input: MemoryCurationInput): Promise<MemoryItem>;
 }
 
 const sessionStatusRank: Record<Session["status"], number> = {
@@ -238,6 +251,42 @@ function createActionTransitionEvent(
   };
 }
 
+function createMemoryCurationEvent(
+  memoryItem: MemoryItem,
+  input: MemoryCurationInput,
+  timestamp: string,
+  actor: ActionItem["owner"]
+): Event {
+  return {
+    kind: "Event",
+    id: `event-memory-${memoryItem.id}-${timestamp.replaceAll(/[^0-9]/g, "")}`,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    projectId: memoryItem.projectId ?? "project-global",
+    ...(memoryItem.sessionId ? { sessionId: memoryItem.sessionId } : {}),
+    ...(memoryItem.threadId ? { threadId: memoryItem.threadId } : {}),
+    memoryItemId: memoryItem.id,
+    originType: "submind",
+    eventType: "memory-curated",
+    category: "memory",
+    nodeCategory: "cognitive",
+    timestamp,
+    summary:
+      input.changeSummary ??
+      `${memoryItem.summary} was curated as ${input.curationState}.`,
+    metadata: {
+      memoryId: memoryItem.id,
+      actor,
+      previousStatus: memoryItem.status,
+      nextStatus: input.status,
+      previousPinned: memoryItem.isPinned,
+      nextPinned: input.isPinned,
+      previousCurationState: memoryItem.curationState,
+      nextCurationState: input.curationState
+    }
+  };
+}
+
 export function cloneStoreSnapshot(
   snapshot: SubMindStoreSnapshot
 ): SubMindStoreSnapshot {
@@ -405,6 +454,52 @@ export function createPreviewRepository(
       };
 
       return structuredClone(nextAction);
+    },
+    async updateMemoryItem(input) {
+      const memoryIndex = liveSnapshot.memory.findIndex(
+        (memoryItem) => memoryItem.id === input.memoryId
+      );
+
+      if (memoryIndex === -1) {
+        throw new Error(`Memory item "${input.memoryId}" was not found.`);
+      }
+
+      const previousMemory = liveSnapshot.memory[memoryIndex];
+
+      if (!previousMemory) {
+        throw new Error(`Memory item "${input.memoryId}" was not found.`);
+      }
+
+      const timestamp = input.timestamp ?? new Date().toISOString();
+      const actor = input.actor ?? "operator";
+      const nextMemory: MemoryItem = {
+        ...previousMemory,
+        summary: input.summary,
+        content: input.content,
+        status: input.status,
+        isPinned: input.isPinned,
+        curationState: input.curationState,
+        isEdited: input.curationState === "edited",
+        ...(input.changeSummary
+          ? { changeSummary: input.changeSummary }
+          : previousMemory.changeSummary
+            ? { changeSummary: previousMemory.changeSummary }
+            : {}),
+        updatedAt: timestamp
+      };
+
+      const nextMemoryItems = [...liveSnapshot.memory];
+      nextMemoryItems[memoryIndex] = nextMemory;
+      liveSnapshot = {
+        ...liveSnapshot,
+        memory: sortMemory(nextMemoryItems),
+        events: sortEvents([
+          createMemoryCurationEvent(previousMemory, input, timestamp, actor),
+          ...liveSnapshot.events
+        ])
+      };
+
+      return structuredClone(nextMemory);
     }
   };
 }
@@ -872,6 +967,13 @@ export function createPreviewStoreSnapshot(): SubMindStoreSnapshot {
         "Avoid coupling project selection/focus to persisted project data. Keep state in UI layers and persistence underneath.",
       confidence: 0.94,
       freshness: 0.91,
+      curationState: "confirmed",
+      sourceEventIds: ["event-submind-schema"],
+      sourceFileChangeIds: [],
+      linkedActionItemIds: ["action-submind-schema"],
+      linkedGuidanceItemIds: ["guidance-submind-stack"],
+      changeSummary:
+        "Confirmed after schema realignment planning hardened the shell boundary.",
       isPinned: true,
       isEdited: false,
       createdAt: "2026-03-29T17:10:00.000Z",
@@ -889,6 +991,13 @@ export function createPreviewStoreSnapshot(): SubMindStoreSnapshot {
         "apps/desktop hosts providers and window wiring only. Store, state derivation, and reusable shell pieces belong in packages.",
       confidence: 0.92,
       freshness: 0.86,
+      curationState: "confirmed",
+      sourceEventIds: ["event-submind-shell", "event-submind-schema"],
+      sourceFileChangeIds: ["change-main", "change-shell"],
+      linkedActionItemIds: ["action-submind-schema"],
+      linkedGuidanceItemIds: ["guidance-submind-stack"],
+      changeSummary:
+        "React shell migration reinforced the thin-desktop architecture rule.",
       isPinned: true,
       isEdited: false,
       createdAt: "2026-03-30T09:18:00.000Z",
@@ -906,6 +1015,13 @@ export function createPreviewStoreSnapshot(): SubMindStoreSnapshot {
         "Atlas Ops must keep escalation thresholds conservative during indexing lag, or operator noise spikes.",
       confidence: 0.79,
       freshness: 0.73,
+      curationState: "derived",
+      sourceEventIds: ["event-atlas-guidance", "event-atlas-action"],
+      sourceFileChangeIds: [],
+      linkedActionItemIds: ["action-atlas-escalation"],
+      linkedGuidanceItemIds: ["guidance-atlas-drift"],
+      changeSummary:
+        "Atlas drift review kept this escalation gotcha active.",
       isPinned: false,
       isEdited: false,
       createdAt: "2026-03-30T06:33:00.000Z",
@@ -924,6 +1040,13 @@ export function createPreviewStoreSnapshot(): SubMindStoreSnapshot {
         "Freshness markers degrade well, but stale confirmation is still too passive for high-value architecture notes.",
       confidence: 0.64,
       freshness: 0.42,
+      curationState: "edited",
+      sourceEventIds: ["event-ledger-memory"],
+      sourceFileChangeIds: [],
+      linkedActionItemIds: ["action-ledger-review"],
+      linkedGuidanceItemIds: ["guidance-ledger-refresh"],
+      changeSummary:
+        "Freshness dropped and the note now waits on explicit operator confirmation.",
       isPinned: false,
       isEdited: true,
       createdAt: "2026-03-29T15:05:00.000Z",
@@ -944,7 +1067,14 @@ export function createPreviewStoreSnapshot(): SubMindStoreSnapshot {
         "The current string-rendered shell and schema drift will amplify rework if Memory and Actions continue on the old path.",
       state: "injected",
       source: "policy",
+      confidence: 0.94,
+      evidenceSummary:
+        "2 events / 2 file changes / 2 linked memories / 1 related action",
+      policySummary:
+        "Schema and shell migrations stay in injected posture while architectural drift could lock in the wrong foundation.",
       linkedMemoryItemIds: ["memory-global-shell", "memory-submind-architecture"],
+      linkedEventIds: ["event-submind-shell", "event-submind-schema"],
+      linkedActionItemIds: ["action-submind-schema"],
       createdAt: "2026-03-30T09:38:00.000Z",
       updatedAt: "2026-03-30T09:39:00.000Z"
     },
@@ -960,7 +1090,14 @@ export function createPreviewStoreSnapshot(): SubMindStoreSnapshot {
         "Recent audit history shows false-positive escalation pressure when indexing jitter overlaps regular deploy windows.",
       state: "candidate",
       source: "model",
+      confidence: 0.81,
+      evidenceSummary:
+        "2 trace events / 1 linked memory / 1 related action around drift review",
+      policySummary:
+        "Keep Atlas guidance candidate-level until operator approval resolves the escalation threshold question.",
       linkedMemoryItemIds: ["memory-atlas-risk"],
+      linkedEventIds: ["event-atlas-guidance", "event-atlas-action"],
+      linkedActionItemIds: ["action-atlas-escalation"],
       createdAt: "2026-03-30T06:46:00.000Z",
       updatedAt: "2026-03-30T06:48:00.000Z"
     },
@@ -976,7 +1113,14 @@ export function createPreviewStoreSnapshot(): SubMindStoreSnapshot {
         "The stale marker is credible, but the memory still influences current design guidance and needs explicit confirmation.",
       state: "suggested",
       source: "model",
+      confidence: 0.69,
+      evidenceSummary:
+        "1 memory refresh event / 1 linked memory / 1 related action awaiting review",
+      policySummary:
+        "Stale architecture knowledge should stay suggested until an operator confirms or supersedes it.",
       linkedMemoryItemIds: ["memory-ledger-constraints"],
+      linkedEventIds: ["event-ledger-memory"],
+      linkedActionItemIds: ["action-ledger-review"],
       createdAt: "2026-03-30T05:58:00.000Z",
       updatedAt: "2026-03-30T06:04:00.000Z"
     }

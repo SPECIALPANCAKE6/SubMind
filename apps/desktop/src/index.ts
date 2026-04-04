@@ -10,6 +10,7 @@ import {
   type ActionStateTransitionInput,
   type EventHistoryQueryInput,
   type FileChangeHistoryQueryInput,
+  type MemoryCurationInput,
   createPreviewRepository,
   createSqliteRepository,
   createPreviewStoreSnapshot,
@@ -142,6 +143,9 @@ export function createDesktopRepository(): SubMindRepository {
     },
     async transitionAction(input: ActionStateTransitionInput) {
       return (await resolveRepository()).transitionAction(input);
+    },
+    async updateMemoryItem(input: MemoryCurationInput) {
+      return (await resolveRepository()).updateMemoryItem(input);
     }
   };
 }

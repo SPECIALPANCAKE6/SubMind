@@ -1,9 +1,33 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { SubMindShell } from "@submind/ui-components";
-import { createShellViewModel, useShellSnapshotQuery, useShellStore } from "@submind/ui-state";
+import type { MemoryItem } from "@submind/shared-schemas";
+import {
+  type ActionTransitionState,
+  createShellSnapshotQueryOptions,
+  createShellViewModel,
+  useShellSnapshotQuery,
+  useShellStore
+} from "@submind/ui-state";
 import { createDesktopRepository } from "./index.js";
 
 const desktopRepository = createDesktopRepository();
+
+interface ActionTransitionRequest {
+  actionId: string;
+  nextState: ActionTransitionState;
+  actualOutcome?: string;
+}
+
+interface MemoryCurationRequest {
+  memoryId: string;
+  summary: string;
+  content: string;
+  status: MemoryItem["status"];
+  isPinned: boolean;
+  curationState: Extract<MemoryItem["curationState"], "confirmed" | "edited">;
+  changeSummary?: string;
+}
 
 function LoadingState() {
   return (
@@ -42,7 +66,14 @@ function ErrorState({ message }: { message: string }) {
 }
 
 export function DesktopApp() {
+  const queryClient = useQueryClient();
   const snapshotQuery = useShellSnapshotQuery(desktopRepository);
+  const [actionOutcomeDraft, setActionOutcomeDraft] = useState("");
+  const [memorySummaryDraft, setMemorySummaryDraft] = useState("");
+  const [memoryContentDraft, setMemoryContentDraft] = useState("");
+  const [memoryStatusDraft, setMemoryStatusDraft] =
+    useState<MemoryItem["status"] | "">("");
+  const [memoryPinnedDraft, setMemoryPinnedDraft] = useState(false);
   const initializeFromSnapshot = useShellStore(
     (state) => state.initializeFromSnapshot
   );
@@ -51,9 +82,12 @@ export function DesktopApp() {
   const selectedProjectId = useShellStore((state) => state.selectedProjectId);
   const focusedProjectId = useShellStore((state) => state.focusedProjectId);
   const activeSessionId = useShellStore((state) => state.activeSessionId);
+  const activeThreadId = useShellStore((state) => state.activeThreadId);
   const activeMemoryId = useShellStore((state) => state.activeMemoryId);
   const activeGuidanceId = useShellStore((state) => state.activeGuidanceId);
   const activeActionId = useShellStore((state) => state.activeActionId);
+  const activeMemory =
+    snapshotQuery.data?.memory.find((memory) => memory.id === activeMemoryId) ?? null;
   const setLayoutMode = useShellStore((state) => state.setLayoutMode);
   const setPrimaryScreen = useShellStore((state) => state.setPrimaryScreen);
   const selectProject = useShellStore((state) => state.selectProject);
@@ -66,15 +100,61 @@ export function DesktopApp() {
   );
   const clearProjectFocus = useShellStore((state) => state.clearProjectFocus);
   const selectSession = useShellStore((state) => state.selectSession);
+  const selectThread = useShellStore((state) => state.selectThread);
   const selectMemory = useShellStore((state) => state.selectMemory);
   const selectGuidance = useShellStore((state) => state.selectGuidance);
   const selectAction = useShellStore((state) => state.selectAction);
+  const activeAction =
+    snapshotQuery.data?.actions.find((action) => action.id === activeActionId) ?? null;
+
+  const transitionActionMutation = useMutation({
+    mutationFn: async (input: ActionTransitionRequest) =>
+      desktopRepository.transitionAction({
+        ...input,
+        actor: "operator"
+      }),
+    async onSuccess() {
+      await queryClient.invalidateQueries({
+        queryKey: createShellSnapshotQueryOptions(desktopRepository).queryKey
+      });
+    }
+  });
+
+  const updateMemoryMutation = useMutation({
+    mutationFn: async (input: MemoryCurationRequest) =>
+      desktopRepository.updateMemoryItem({
+        ...input,
+        actor: "operator"
+      }),
+    async onSuccess() {
+      await queryClient.invalidateQueries({
+        queryKey: createShellSnapshotQueryOptions(desktopRepository).queryKey
+      });
+    }
+  });
 
   useEffect(() => {
     if (snapshotQuery.data) {
       initializeFromSnapshot(snapshotQuery.data);
     }
   }, [initializeFromSnapshot, snapshotQuery.data]);
+
+  useEffect(() => {
+    setActionOutcomeDraft(activeAction?.actualOutcome ?? "");
+  }, [activeAction?.id, activeAction?.actualOutcome]);
+
+  useEffect(() => {
+    setMemorySummaryDraft(activeMemory?.summary ?? "");
+    setMemoryContentDraft(activeMemory?.content ?? "");
+    setMemoryStatusDraft(activeMemory?.status ?? "");
+    setMemoryPinnedDraft(activeMemory?.isPinned ?? false);
+  }, [
+    activeMemory?.id,
+    activeMemory?.summary,
+    activeMemory?.content,
+    activeMemory?.status,
+    activeMemory?.isPinned
+  ]);
 
   if (snapshotQuery.error) {
     return <ErrorState message={snapshotQuery.error.message} />;
@@ -90,14 +170,62 @@ export function DesktopApp() {
     selectedProjectId,
     focusedProjectId,
     activeSessionId,
+    activeThreadId,
     activeMemoryId,
     activeGuidanceId,
     activeActionId
   };
 
+  function handleTransitionAction(
+    actionId: string,
+    nextState: ActionTransitionState
+  ) {
+    const nextActualOutcome = actionOutcomeDraft.trim();
+
+    transitionActionMutation.mutate({
+      actionId,
+      nextState,
+      ...(nextActualOutcome ? { actualOutcome: nextActualOutcome } : {})
+    });
+  }
+
+  function handleSaveMemory(
+    curationState: Extract<MemoryItem["curationState"], "confirmed" | "edited">
+  ) {
+    if (!activeMemory || !memoryStatusDraft) {
+      return;
+    }
+
+    const nextSummary = memorySummaryDraft.trim() || activeMemory.summary;
+    const nextContent = memoryContentDraft.trim() || activeMemory.content;
+
+    updateMemoryMutation.mutate({
+      memoryId: activeMemory.id,
+      summary: nextSummary,
+      content: nextContent,
+      status: memoryStatusDraft,
+      isPinned: memoryPinnedDraft,
+      curationState,
+      changeSummary:
+        curationState === "confirmed"
+          ? "Confirmed by the operator after reviewing retained evidence."
+          : "Edited by the operator to keep retained knowledge accurate."
+    });
+  }
+
   return (
     <SubMindShell
-      viewModel={createShellViewModel(snapshotQuery.data, shellState)}
+      viewModel={createShellViewModel(snapshotQuery.data, shellState, {
+        actionOutcomeDraft,
+        isActionMutationPending: transitionActionMutation.isPending,
+        pendingActionTransition:
+          transitionActionMutation.variables?.nextState ?? null,
+        memorySummaryDraft,
+        memoryContentDraft,
+        memoryStatusDraft,
+        memoryPinnedDraft,
+        isMemoryMutationPending: updateMemoryMutation.isPending
+      })}
       actions={{
         onLayoutModeChange: setLayoutMode,
         onPrimaryScreenChange: setPrimaryScreen,
@@ -107,9 +235,17 @@ export function DesktopApp() {
         onClearProjectSelection: clearProjectSelection,
         onClearProjectFocus: clearProjectFocus,
         onSelectSession: selectSession,
+        onSelectThread: selectThread,
         onSelectMemory: selectMemory,
         onSelectGuidance: selectGuidance,
-        onSelectAction: selectAction
+        onSelectAction: selectAction,
+        onActionOutcomeDraftChange: setActionOutcomeDraft,
+        onTransitionAction: handleTransitionAction,
+        onMemorySummaryDraftChange: setMemorySummaryDraft,
+        onMemoryContentDraftChange: setMemoryContentDraft,
+        onMemoryStatusDraftChange: setMemoryStatusDraft,
+        onMemoryPinnedDraftChange: setMemoryPinnedDraft,
+        onSaveMemory: handleSaveMemory
       }}
     />
   );

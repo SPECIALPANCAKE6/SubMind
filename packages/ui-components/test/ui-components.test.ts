@@ -31,9 +31,17 @@ describe("ui-components", () => {
     onClearProjectSelection: () => undefined,
     onClearProjectFocus: () => undefined,
     onSelectSession: () => undefined,
+    onSelectThread: () => undefined,
     onSelectMemory: () => undefined,
     onSelectGuidance: () => undefined,
-    onSelectAction: () => undefined
+    onSelectAction: () => undefined,
+    onActionOutcomeDraftChange: () => undefined,
+    onTransitionAction: () => undefined,
+    onMemorySummaryDraftChange: () => undefined,
+    onMemoryContentDraftChange: () => undefined,
+    onMemoryStatusDraftChange: () => undefined,
+    onMemoryPinnedDraftChange: () => undefined,
+    onSaveMemory: () => undefined
   };
 
   it("renders the command strip, project stack, and dashboard shell", () => {
@@ -109,6 +117,32 @@ describe("ui-components", () => {
     expect(markup).toContain("Exit Focus");
     expect(markup).toContain("guidance link");
     expect(markup).toContain("actual outcome");
+    expect(markup).toContain("Expected Outcome");
+    expect(markup).toContain("Action History");
+    expect(markup).toContain("Approve");
+    expect(markup).toContain("Reject");
+    expect(markup).toContain("Block");
+  });
+
+  it("renders the deep sessions screen with threads, event sequence, file changes, and linked context", () => {
+    const snapshot = createPreviewStoreSnapshot();
+    const state = setShellPrimaryScreen(
+      createInitialShellUiState(snapshot),
+      "sessions"
+    );
+    const markup = renderToStaticMarkup(
+      createElement(SubMindShell, {
+        viewModel: createShellViewModel(snapshot, state),
+        actions: noopActions
+      })
+    );
+
+    expect(markup).toContain("Session Navigator");
+    expect(markup).toContain("Threads");
+    expect(markup).toContain("Event Sequence");
+    expect(markup).toContain("File Changes");
+    expect(markup).toContain("Linked Context");
+    expect(markup).toContain("Open Guidance");
   });
 
   it("renders guidance posture and evidence labels in the guidance screen", () => {
@@ -134,6 +168,37 @@ describe("ui-components", () => {
     expect(markup).toContain("memory ref");
     expect(markup).toContain("related action");
     expect(markup).toContain("Decision Inspector");
+    expect(markup).toContain("Evidence Events");
+    expect(markup).toContain("Guidance History");
+  });
+
+  it("renders retained memory inspector, curation controls, and provenance surfaces", () => {
+    const snapshot = createPreviewStoreSnapshot();
+    const state = setShellPrimaryScreen(
+      createInitialShellUiState(snapshot),
+      "memory"
+    );
+    const markup = renderToStaticMarkup(
+      createElement(SubMindShell, {
+        viewModel: createShellViewModel(snapshot, state, {
+          memorySummaryDraft: "Thin desktop shell boundary",
+          memoryContentDraft:
+            "apps/desktop stays thin while packages own runtime, state, and retained knowledge.",
+          memoryStatusDraft: "active",
+          memoryPinnedDraft: true,
+          isMemoryMutationPending: true
+        }),
+        actions: noopActions
+      })
+    );
+
+    expect(markup).toContain("Memory Inspector");
+    expect(markup).toContain("Memory Curation");
+    expect(markup).toContain("Source Events");
+    expect(markup).toContain("Source Files");
+    expect(markup).toContain("What Changed");
+    expect(markup).toContain("Confirm Memory");
+    expect(markup).toContain("Saving...");
   });
 
   it("renders a dedicated operator shell with a left rail and right workspace", () => {

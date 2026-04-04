@@ -6,12 +6,18 @@ import {
 } from "react";
 import type {
   ActionCardModel,
+  ActionHistoryItemModel,
+  ActionTransitionControlModel,
   GuidanceCardModel,
   LayoutMode,
   MemoryCardModel,
   PrimaryScreen,
   ProjectStackCardModel,
+  SessionContextLinkModel,
+  SessionFileChangeItemModel,
   SessionListItemModel,
+  SessionTaskItemModel,
+  SessionThreadItemModel,
   ShellCardModel,
   SubMindShellViewModel,
   TraceEventItemModel
@@ -26,9 +32,22 @@ export interface SubMindShellActions {
   onClearProjectSelection: () => void;
   onClearProjectFocus: () => void;
   onSelectSession: (sessionId: string) => void;
+  onSelectThread: (threadId: string) => void;
   onSelectMemory: (memoryId: string) => void;
   onSelectGuidance: (guidanceId: string) => void;
   onSelectAction: (actionId: string) => void;
+  onActionOutcomeDraftChange: (value: string) => void;
+  onTransitionAction: (
+    actionId: string,
+    nextState: ActionTransitionControlModel["nextState"]
+  ) => void;
+  onMemorySummaryDraftChange: (value: string) => void;
+  onMemoryContentDraftChange: (value: string) => void;
+  onMemoryStatusDraftChange: (
+    status: SubMindShellViewModel["memory"]["draftStatus"]
+  ) => void;
+  onMemoryPinnedDraftChange: (isPinned: boolean) => void;
+  onSaveMemory: (curationState: "confirmed" | "edited") => void;
 }
 
 export interface SubMindShellProps {
@@ -89,22 +108,14 @@ function Surface({
   );
 }
 
-function ToneCard({
-  card,
-  size = "support",
-  className,
+function getToneCardClasses(
+  card: ShellCardModel,
+  size: ToneCardSize,
   emphasized = false,
-  onClick,
-  actionLabel
-}: {
-  card: ShellCardModel;
-  size?: ToneCardSize;
-  className?: string;
-  emphasized?: boolean;
-  onClick?: () => void;
-  actionLabel?: string;
-}) {
-  const toneClasses = cx(
+  interactive = false,
+  className?: string
+): string {
+  return cx(
     "sm-tone-card",
     card.tone === "plum"
       ? "sm-tone-card--plum"
@@ -121,7 +132,31 @@ function ToneCard({
           ? "sm-tone-card--stack"
           : "sm-tone-card--support",
     emphasized && "sm-tone-card--emphasized",
-    onClick && "sm-tone-card--interactive",
+    interactive && "sm-tone-card--interactive",
+    className
+  );
+}
+
+function ToneCard({
+  card,
+  size = "support",
+  className,
+  emphasized = false,
+  onClick,
+  actionLabel
+}: {
+  card: ShellCardModel;
+  size?: ToneCardSize;
+  className?: string;
+  emphasized?: boolean;
+  onClick?: () => void;
+  actionLabel?: string;
+}) {
+  const toneClasses = getToneCardClasses(
+    card,
+    size,
+    emphasized,
+    !!onClick,
     className
   );
 
@@ -143,6 +178,46 @@ function ToneCard({
       <p className="sm-tone-card__label">{card.label}</p>
       <h3 className="sm-display sm-tone-card__title">{card.title}</h3>
       <p className="sm-tone-card__body">{card.body}</p>
+    </article>
+  );
+}
+
+function ActionHistoryItem({ item }: { item: ActionHistoryItemModel }) {
+  return (
+    <article
+      className={cx(
+        "sm-action-history__item",
+        item.isLatest && "sm-action-history__item--latest"
+      )}
+    >
+      <div className="sm-action-history__meta">
+        <span className="sm-label">{item.transitionLabel}</span>
+        <span>{item.timestampLabel}</span>
+      </div>
+      <p className="sm-action-history__summary">{item.summary}</p>
+      <p className="sm-action-history__actor">Actor: {item.actorLabel}</p>
+    </article>
+  );
+}
+
+function RetainedHistoryItem({
+  item
+}: {
+  item: SubMindShellViewModel["memory"]["inspector"]["historyItems"][number];
+}) {
+  return (
+    <article
+      className={cx(
+        "sm-action-history__item",
+        item.isLatest && "sm-action-history__item--latest"
+      )}
+    >
+      <div className="sm-action-history__meta">
+        <span className="sm-label">{item.metaLabel}</span>
+        <span>{item.timestampLabel}</span>
+      </div>
+      <p className="sm-action-history__summary">{item.summary}</p>
+      <p className="sm-action-history__actor">Origin: {item.originLabel}</p>
     </article>
   );
 }
@@ -338,17 +413,149 @@ function TraceItem({ item }: { item: TraceEventItemModel }) {
   return (
     <InteractiveCard isEmphasized={item.isEmphasized}>
       <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-[var(--sm-text-muted)]">
-        <span className="sm-label">{item.projectName}</span>
+        <span className="sm-label">{item.originLabel}</span>
         <span>{item.timestampLabel}</span>
       </div>
       <p className="text-sm font-semibold text-[var(--sm-text-strong)]">
         {item.summary}
       </p>
       <div className="flex flex-wrap gap-2 text-xs text-[var(--sm-text-muted)]">
+        <span>{item.projectName}</span>
+        <span>{item.eventType}</span>
         <span>{item.category}</span>
         <span>{item.nodeCategory}</span>
+        <span>{item.fileChangeLabel}</span>
       </div>
     </InteractiveCard>
+  );
+}
+
+function SessionThreadCard({
+  item,
+  onSelect
+}: {
+  item: SessionThreadItemModel;
+  onSelect: (threadId: string) => void;
+}) {
+  return (
+    <InteractiveCard
+      isActive={item.isActive}
+      isEmphasized={item.isActive}
+      onClick={() => onSelect(item.threadId)}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="grid gap-1">
+          <span className="sm-label">Thread</span>
+          <span className="text-sm font-semibold text-[var(--sm-text-strong)]">
+            {item.title}
+          </span>
+        </div>
+        <span className="sm-status-pill">{titleCase(item.status)}</span>
+      </div>
+      <p className="sm-copy text-sm leading-7">{item.summary}</p>
+      <div className="flex flex-wrap gap-2 text-xs text-[var(--sm-text-muted)]">
+        <span>{item.updatedAtLabel}</span>
+        <span>{item.taskCount} tasks</span>
+        <span>{item.eventCount} events</span>
+        <span>{item.fileChangeCount} file changes</span>
+      </div>
+    </InteractiveCard>
+  );
+}
+
+function SessionTaskCard({ item }: { item: SessionTaskItemModel }) {
+  return (
+    <article className="sm-session-task">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="grid gap-1">
+          <span className="sm-label">Task</span>
+          <span className="text-sm font-semibold text-[var(--sm-text-strong)]">
+            {item.title}
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs text-[var(--sm-text-muted)]">
+          <span className="sm-status-pill">{titleCase(item.status)}</span>
+          <span className="sm-chip sm-chip--subtle">{titleCase(item.priority)}</span>
+        </div>
+      </div>
+      <p className="sm-copy text-sm leading-7">{item.summary}</p>
+      <p className="text-xs text-[var(--sm-text-muted)]">{item.updatedAtLabel}</p>
+    </article>
+  );
+}
+
+function FileChangeCard({ item }: { item: SessionFileChangeItemModel }) {
+  return (
+    <article className="sm-session-file-change">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="grid gap-1">
+          <span className="sm-label">{titleCase(item.changeType)}</span>
+          <span className="text-sm font-semibold text-[var(--sm-text-strong)] break-all">
+            {item.path}
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs text-[var(--sm-text-muted)]">
+          <span>{item.languageLabel}</span>
+          <span>{item.updatedAtLabel}</span>
+        </div>
+      </div>
+      <p className="sm-copy text-sm leading-7">{item.summary}</p>
+      <p className="text-xs text-[var(--sm-text-muted)]">{item.eventSummary}</p>
+    </article>
+  );
+}
+
+function SessionContextCard({
+  item,
+  actions
+}: {
+  item: SessionContextLinkModel;
+  actions: SubMindShellActions;
+}) {
+  function handleClick() {
+    if (item.kind === "action") {
+      actions.onSelectAction(item.targetId);
+      actions.onPrimaryScreenChange("actions");
+      return;
+    }
+
+    if (item.kind === "guidance") {
+      actions.onSelectGuidance(item.targetId);
+      actions.onPrimaryScreenChange("guidance");
+      return;
+    }
+
+    actions.onSelectMemory(item.targetId);
+    actions.onPrimaryScreenChange("memory");
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      data-tone={item.tone}
+      className={getToneCardClasses(
+        {
+          id: item.id,
+          label: titleCase(item.kind),
+          title: item.title,
+          body: item.summary,
+          tone: item.tone
+        },
+        "support",
+        false,
+        true,
+        "sm-session-context-card"
+      )}
+    >
+      <p className="sm-tone-card__label">{titleCase(item.kind)}</p>
+      <h3 className="sm-display sm-tone-card__title">{item.title}</h3>
+      <p className="sm-tone-card__body">{item.summary}</p>
+      <div className="flex flex-wrap gap-2 text-xs text-[rgba(244,238,255,0.72)]">
+        <span>{item.meta}</span>
+        <span>Open {titleCase(item.kind)}</span>
+      </div>
+    </button>
   );
 }
 
@@ -379,8 +586,11 @@ function MemoryCard({
         <span>{card.bucket}</span>
         <span>{card.confidenceLabel}</span>
         <span>{card.freshnessLabel}</span>
+        <span>{card.curationLabel}</span>
+        <span>{card.provenanceLabel}</span>
         {card.isPinned ? <span>pinned</span> : null}
       </div>
+      <p className="text-xs text-[var(--sm-text-muted)]">{card.changeLabel}</p>
     </InteractiveCard>
   );
 }
@@ -411,9 +621,12 @@ function GuidanceCard({
       <div className="flex flex-wrap gap-2 text-xs text-[var(--sm-text-muted)]">
         <span>{card.projectName}</span>
         <span>{card.source}</span>
+        <span>{card.confidenceLabel}</span>
         <span>{card.linkedMemoryLabel}</span>
         <span>{card.actionPressureLabel}</span>
       </div>
+      <p className="text-xs text-[var(--sm-text-muted)]">{card.evidenceLabel}</p>
+      <p className="text-xs text-[var(--sm-text-muted)]">{card.policyLabel}</p>
     </InteractiveCard>
   );
 }
@@ -570,10 +783,10 @@ function renderSessions(
   actions: SubMindShellActions
 ) {
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(20rem,0.9fr)_minmax(0,1.1fr)]">
+    <div className="sm-sessions-layout">
       <div className="grid gap-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="sm-label">Session Queue</p>
+          <p className="sm-label">Session Navigator</p>
           <span className="sm-chip sm-chip--subtle">
             {viewModel.sessions.sessions.length} visible
           </span>
@@ -586,19 +799,105 @@ function renderSessions(
           />
         ))}
       </div>
+
       <div className="grid gap-4">
         <ToneCard card={viewModel.sessions.inspector} size="detail" emphasized />
-        <div className="grid gap-3">
+
+        <Surface variant="muted" className="grid gap-3 p-3 md:p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="sm-label">Recent Activity</p>
+            <p className="sm-label">Threads</p>
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.sessions.threads.length} in session
+            </span>
+          </div>
+          <div className="grid gap-3 xl:grid-cols-2">
+            {viewModel.sessions.threads.map((item) => (
+              <SessionThreadCard
+                key={item.threadId}
+                item={item}
+                onSelect={actions.onSelectThread}
+              />
+            ))}
+          </div>
+        </Surface>
+
+        <Surface variant="panel" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="sm-label">Event Sequence</p>
             <span className="sm-chip sm-chip--subtle">
               {viewModel.sessions.traceItems.length} events
             </span>
           </div>
-          {viewModel.sessions.traceItems.map((item) => (
-            <TraceItem key={item.eventId} item={item} />
-          ))}
-        </div>
+          {viewModel.sessions.traceItems.length > 0 ? (
+            viewModel.sessions.traceItems.map((item) => (
+              <TraceItem key={item.eventId} item={item} />
+            ))
+          ) : (
+            <p className="sm-copy text-sm leading-7 text-[var(--sm-text-muted)]">
+              No events were recorded for the current scope.
+            </p>
+          )}
+        </Surface>
+
+        <Surface variant="panel" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="sm-label">File Changes</p>
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.sessions.fileChanges.length} changes
+            </span>
+          </div>
+          {viewModel.sessions.fileChanges.length > 0 ? (
+            <div className="grid gap-3 xl:grid-cols-2">
+              {viewModel.sessions.fileChanges.map((item) => (
+                <FileChangeCard key={item.fileChangeId} item={item} />
+              ))}
+            </div>
+          ) : (
+            <p className="sm-copy text-sm leading-7 text-[var(--sm-text-muted)]">
+              No file changes were captured for the current scope.
+            </p>
+          )}
+        </Surface>
+
+        <Surface variant="panel" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="sm-label">Tasks</p>
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.sessions.tasks.length} in focus
+            </span>
+          </div>
+          {viewModel.sessions.tasks.length > 0 ? (
+            <div className="grid gap-3 xl:grid-cols-2">
+              {viewModel.sessions.tasks.map((item) => (
+                <SessionTaskCard key={item.taskId} item={item} />
+              ))}
+            </div>
+          ) : (
+            <p className="sm-copy text-sm leading-7 text-[var(--sm-text-muted)]">
+              No task structure is recorded for the current thread.
+            </p>
+          )}
+        </Surface>
+      </div>
+
+      <div className="grid gap-4">
+        <Surface variant="muted" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="sm-label">Linked Context</p>
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.sessions.linkedContext.length} items
+            </span>
+          </div>
+          {viewModel.sessions.linkedContext.length > 0 ? (
+            viewModel.sessions.linkedContext.map((item) => (
+              <SessionContextCard key={item.id} item={item} actions={actions} />
+            ))
+          ) : (
+            <p className="sm-copy text-sm leading-7 text-[var(--sm-text-muted)]">
+              No linked actions, guidance, or memory were found for the current trace.
+            </p>
+          )}
+        </Surface>
       </div>
     </div>
   );
@@ -625,7 +924,206 @@ function renderMemory(
           />
         ))}
       </div>
-      <ToneCard card={viewModel.memory.inspector} size="detail" />
+      <div className="grid gap-4">
+        <Surface variant="panel" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="grid gap-1">
+              <p className="sm-label">Memory Inspector</p>
+              <h3 className="sm-display text-xl text-[var(--sm-text-strong)]">
+                {viewModel.memory.inspector.title}
+              </h3>
+            </div>
+            {viewModel.memory.inspector.memoryId ? (
+              <div className="flex flex-wrap gap-2 text-xs text-[var(--sm-text-muted)]">
+                <span className="sm-chip sm-chip--subtle">
+                  {viewModel.memory.inspector.statusLabel}
+                </span>
+                <span className="sm-chip sm-chip--subtle">
+                  {viewModel.memory.inspector.curationLabel}
+                </span>
+                {viewModel.memory.inspector.isPinned ? (
+                  <span className="sm-chip sm-chip--selected">Pinned</span>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+          <p className="sm-copy text-sm leading-7">
+            {viewModel.memory.inspector.content}
+          </p>
+          <div className="grid gap-2 text-xs text-[var(--sm-text-muted)]">
+            <span>{viewModel.memory.inspector.projectName}</span>
+            <span>{viewModel.memory.inspector.bucketLabel}</span>
+            <span>{viewModel.memory.inspector.confidenceLabel}</span>
+            <span>{viewModel.memory.inspector.freshnessLabel}</span>
+            <span>{viewModel.memory.inspector.provenanceSummary}</span>
+            <span>{viewModel.memory.inspector.changeSummary}</span>
+          </div>
+        </Surface>
+
+        <Surface variant="muted" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="sm-label">Memory Curation</p>
+            {viewModel.memory.isMutationPending ? (
+              <span className="sm-chip sm-chip--attention">Saving...</span>
+            ) : null}
+          </div>
+          <label className="grid gap-2">
+            <span className="sm-label">Summary</span>
+            <input
+              value={viewModel.memory.draftSummary}
+              onChange={(event) =>
+                actions.onMemorySummaryDraftChange(event.target.value)
+              }
+              disabled={!viewModel.memory.inspector.memoryId || viewModel.memory.isMutationPending}
+              className="sm-retained-input"
+            />
+          </label>
+          <label className="grid gap-2">
+            <span className="sm-label">Content</span>
+            <textarea
+              value={viewModel.memory.draftContent}
+              onChange={(event) =>
+                actions.onMemoryContentDraftChange(event.target.value)
+              }
+              disabled={!viewModel.memory.inspector.memoryId || viewModel.memory.isMutationPending}
+              className="sm-retained-textarea"
+            />
+          </label>
+          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+            <label className="grid gap-2">
+              <span className="sm-label">Status</span>
+              <select
+                value={viewModel.memory.draftStatus}
+                onChange={(event) =>
+                  actions.onMemoryStatusDraftChange(
+                    event.target.value as SubMindShellViewModel["memory"]["draftStatus"]
+                  )
+                }
+                disabled={!viewModel.memory.inspector.memoryId || viewModel.memory.isMutationPending}
+                className="sm-retained-input"
+              >
+                <option value="">Select status</option>
+                <option value="active">Active</option>
+                <option value="archived">Archived</option>
+                <option value="stale">Stale</option>
+                <option value="superseded">Superseded</option>
+                <option value="draft">Draft</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-[var(--sm-text-body)]">
+              <input
+                type="checkbox"
+                checked={viewModel.memory.draftIsPinned}
+                onChange={(event) =>
+                  actions.onMemoryPinnedDraftChange(event.target.checked)
+                }
+                disabled={!viewModel.memory.inspector.memoryId || viewModel.memory.isMutationPending}
+              />
+              Pin memory
+            </label>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => actions.onSaveMemory("edited")}
+              disabled={!viewModel.memory.inspector.memoryId || viewModel.memory.isMutationPending}
+              className="sm-action-transition-button sm-action-transition-button--violet"
+            >
+              <span className="sm-action-transition-button__label">Save Edit</span>
+              <span className="sm-action-transition-button__body">
+                Persist the curated summary/content as edited retained knowledge.
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => actions.onSaveMemory("confirmed")}
+              disabled={!viewModel.memory.inspector.memoryId || viewModel.memory.isMutationPending}
+              className="sm-action-transition-button sm-action-transition-button--plum"
+            >
+              <span className="sm-action-transition-button__label">Confirm Memory</span>
+              <span className="sm-action-transition-button__body">
+                Keep the current text, but confirm the memory as operator-validated.
+              </span>
+            </button>
+          </div>
+        </Surface>
+
+        <Surface variant="panel" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="sm-label">Linked Context</p>
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.memory.inspector.linkedContext.length} items
+            </span>
+          </div>
+          {viewModel.memory.inspector.linkedContext.length > 0 ? (
+            viewModel.memory.inspector.linkedContext.map((item) => (
+              <SessionContextCard key={item.id} item={item} actions={actions} />
+            ))
+          ) : (
+            <p className="sm-copy text-sm leading-7 text-[var(--sm-text-muted)]">
+              No linked actions or guidance are currently attached to this memory.
+            </p>
+          )}
+        </Surface>
+
+        <Surface variant="panel" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="sm-label">Source Events</p>
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.memory.inspector.sourceEvents.length} events
+            </span>
+          </div>
+          {viewModel.memory.inspector.sourceEvents.length > 0 ? (
+            viewModel.memory.inspector.sourceEvents.map((item) => (
+              <TraceItem key={item.eventId} item={item} />
+            ))
+          ) : (
+            <p className="sm-copy text-sm leading-7 text-[var(--sm-text-muted)]">
+              No source events were captured for this memory yet.
+            </p>
+          )}
+        </Surface>
+
+        <Surface variant="panel" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="sm-label">Source Files</p>
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.memory.inspector.sourceFiles.length} files
+            </span>
+          </div>
+          {viewModel.memory.inspector.sourceFiles.length > 0 ? (
+            <div className="grid gap-3">
+              {viewModel.memory.inspector.sourceFiles.map((item) => (
+                <FileChangeCard key={item.fileChangeId} item={item} />
+              ))}
+            </div>
+          ) : (
+            <p className="sm-copy text-sm leading-7 text-[var(--sm-text-muted)]">
+              No concrete file changes are currently linked to this memory.
+            </p>
+          )}
+        </Surface>
+
+        <Surface variant="panel" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="sm-label">What Changed</p>
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.memory.inspector.historyItems.length} events
+            </span>
+          </div>
+          {viewModel.memory.inspector.historyItems.length > 0 ? (
+            <div className="sm-action-history__list">
+              {viewModel.memory.inspector.historyItems.map((item) => (
+                <RetainedHistoryItem key={item.eventId} item={item} />
+              ))}
+            </div>
+          ) : (
+            <p className="sm-copy text-sm leading-7 text-[var(--sm-text-muted)]">
+              No retained change history has been recorded for this memory yet.
+            </p>
+          )}
+        </Surface>
+      </div>
     </div>
   );
 }
@@ -653,7 +1151,97 @@ function renderGuidance(
       </div>
       <div className="grid gap-4">
         <ToneCard card={viewModel.guidance.posture} size="support" emphasized />
-        <ToneCard card={viewModel.guidance.inspector} size="detail" />
+        <Surface variant="panel" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="grid gap-1">
+              <p className="sm-label">Decision Inspector</p>
+              <h3 className="sm-display text-xl text-[var(--sm-text-strong)]">
+                {viewModel.guidance.inspector.title}
+              </h3>
+            </div>
+            {viewModel.guidance.inspector.guidanceId ? (
+              <div className="flex flex-wrap gap-2 text-xs text-[var(--sm-text-muted)]">
+                <span className="sm-chip sm-chip--subtle">
+                  {viewModel.guidance.inspector.stateLabel}
+                </span>
+                <span className="sm-chip sm-chip--subtle">
+                  {viewModel.guidance.inspector.sourceLabel}
+                </span>
+              </div>
+            ) : null}
+          </div>
+          <p className="sm-copy text-sm leading-7">
+            {viewModel.guidance.inspector.summary}
+          </p>
+          <div className="grid gap-2 text-xs text-[var(--sm-text-muted)]">
+            <span>{viewModel.guidance.inspector.projectName}</span>
+            <span>{viewModel.guidance.inspector.confidenceLabel}</span>
+            <span>{viewModel.guidance.inspector.evidenceSummary}</span>
+            <span>{viewModel.guidance.inspector.policySummary}</span>
+          </div>
+          <div className="grid gap-2">
+            <p className="sm-label">Rationale</p>
+            <p className="sm-copy text-sm leading-7">
+              {viewModel.guidance.inspector.rationale}
+            </p>
+          </div>
+        </Surface>
+
+        <Surface variant="muted" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="sm-label">Linked Context</p>
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.guidance.inspector.linkedContext.length} items
+            </span>
+          </div>
+          {viewModel.guidance.inspector.linkedContext.length > 0 ? (
+            viewModel.guidance.inspector.linkedContext.map((item) => (
+              <SessionContextCard key={item.id} item={item} actions={actions} />
+            ))
+          ) : (
+            <p className="sm-copy text-sm leading-7 text-[var(--sm-text-muted)]">
+              No linked memory or action context is attached to this guidance yet.
+            </p>
+          )}
+        </Surface>
+
+        <Surface variant="panel" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="sm-label">Evidence Events</p>
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.guidance.inspector.evidenceEvents.length} events
+            </span>
+          </div>
+          {viewModel.guidance.inspector.evidenceEvents.length > 0 ? (
+            viewModel.guidance.inspector.evidenceEvents.map((item) => (
+              <TraceItem key={item.eventId} item={item} />
+            ))
+          ) : (
+            <p className="sm-copy text-sm leading-7 text-[var(--sm-text-muted)]">
+              No evidence events are currently linked to this guidance package.
+            </p>
+          )}
+        </Surface>
+
+        <Surface variant="panel" className="grid gap-3 p-3 md:p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="sm-label">Guidance History</p>
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.guidance.inspector.historyItems.length} events
+            </span>
+          </div>
+          {viewModel.guidance.inspector.historyItems.length > 0 ? (
+            <div className="sm-action-history__list">
+              {viewModel.guidance.inspector.historyItems.map((item) => (
+                <RetainedHistoryItem key={item.eventId} item={item} />
+              ))}
+            </div>
+          ) : (
+            <p className="sm-copy text-sm leading-7 text-[var(--sm-text-muted)]">
+              No guidance history has been recorded for this package yet.
+            </p>
+          )}
+        </Surface>
       </div>
     </div>
   );
@@ -682,8 +1270,123 @@ function renderActions(
       </div>
       <div className="grid gap-4">
         <ToneCard card={viewModel.actions.posture} size="support" emphasized />
-        <ToneCard card={viewModel.actions.mainView} size="detail" emphasized />
-        <ToneCard card={viewModel.actions.inspector} size="detail" />
+        <article
+          data-tone={viewModel.actions.mainView.tone}
+          className={getToneCardClasses(
+            viewModel.actions.mainView,
+            "detail",
+            true,
+            false,
+            "sm-action-panel"
+          )}
+        >
+          <div className="sm-action-panel__header">
+            <div className="grid gap-1">
+              <p className="sm-tone-card__label">{viewModel.actions.mainView.label}</p>
+              <h3 className="sm-display sm-tone-card__title">
+                {viewModel.actions.mainView.title}
+              </h3>
+            </div>
+            {viewModel.actions.isMutationPending ? (
+              <span className="sm-chip sm-chip--attention">Applying update</span>
+            ) : null}
+          </div>
+          <p className="sm-tone-card__body">{viewModel.actions.mainView.body}</p>
+          <div className="sm-action-panel__section">
+            <span className="sm-label">Expected Outcome</span>
+            <p className="sm-action-panel__copy">{viewModel.actions.expectedOutcome}</p>
+          </div>
+          <label className="sm-action-panel__section">
+            <span className="sm-label">Actual Outcome</span>
+            <textarea
+              value={viewModel.actions.actualOutcome}
+              onChange={(event) =>
+                actions.onActionOutcomeDraftChange(event.target.value)
+              }
+              placeholder={viewModel.actions.actualOutcomePlaceholder}
+              disabled={!viewModel.actions.activeActionId || viewModel.actions.isMutationPending}
+              className="sm-action-panel__textarea"
+            />
+          </label>
+          <div className="sm-action-panel__transitions">
+            {viewModel.actions.transitionControls.length > 0 ? (
+              viewModel.actions.transitionControls.map((control) => (
+                <button
+                  key={control.nextState}
+                  type="button"
+                  disabled={control.isDisabled || !viewModel.actions.activeActionId}
+                  onClick={() =>
+                    viewModel.actions.activeActionId &&
+                    actions.onTransitionAction(
+                      viewModel.actions.activeActionId,
+                      control.nextState
+                    )
+                  }
+                  className={cx(
+                    "sm-action-transition-button",
+                    control.tone === "plum" &&
+                      "sm-action-transition-button--plum",
+                    control.tone === "violet" &&
+                      "sm-action-transition-button--violet",
+                    control.tone === "amber" &&
+                      "sm-action-transition-button--amber",
+                    control.tone === "slate" &&
+                      "sm-action-transition-button--slate"
+                  )}
+                >
+                  <span className="sm-action-transition-button__label">
+                    {viewModel.actions.isMutationPending &&
+                    viewModel.actions.pendingActionTransition === control.nextState
+                      ? `${control.label}...`
+                      : control.label}
+                  </span>
+                  <span className="sm-action-transition-button__body">
+                    {control.description}
+                  </span>
+                </button>
+              ))
+            ) : (
+              <p className="sm-action-panel__empty">
+                This action is already in a terminal state.
+              </p>
+            )}
+          </div>
+        </article>
+        <article
+          data-tone={viewModel.actions.inspector.tone}
+          className={getToneCardClasses(
+            viewModel.actions.inspector,
+            "detail",
+            false,
+            false,
+            "sm-action-panel sm-action-panel--audit"
+          )}
+        >
+          <p className="sm-tone-card__label">{viewModel.actions.inspector.label}</p>
+          <h3 className="sm-display sm-tone-card__title">
+            {viewModel.actions.inspector.title}
+          </h3>
+          <p className="sm-tone-card__body">{viewModel.actions.inspector.body}</p>
+          <div className="sm-action-history">
+            <div className="sm-action-history__header">
+              <p className="sm-label">Action History</p>
+              <span className="sm-chip sm-chip--subtle">
+                {viewModel.actions.historyItems.length} events
+              </span>
+            </div>
+            {viewModel.actions.historyItems.length > 0 ? (
+              <div className="sm-action-history__list">
+                {viewModel.actions.historyItems.map((item) => (
+                  <ActionHistoryItem key={item.eventId} item={item} />
+                ))}
+              </div>
+            ) : (
+              <p className="sm-action-panel__empty">
+                No action history recorded yet.
+              </p>
+            )}
+          </div>
+        </article>
       </div>
     </div>
   );

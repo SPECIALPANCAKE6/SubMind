@@ -46,9 +46,15 @@ describe("store", () => {
     expect(getProjectMemoryItems(snapshot, "project-submind")[0]?.summary).toContain(
       "Desktop app must stay thin"
     );
+    expect(
+      getProjectMemoryItems(snapshot, "project-submind")[0]?.sourceFileChangeIds
+    ).toContain("change-main");
     expect(getProjectGuidanceItems(snapshot, "project-submind")[0]?.state).toBe(
       "injected"
     );
+    expect(
+      getProjectGuidanceItems(snapshot, "project-submind")[0]?.policySummary
+    ).toContain("Schema");
     expect(getProjectActionItems(snapshot, "project-submind")[0]?.state).toBe(
       "pending"
     );
@@ -111,5 +117,30 @@ describe("store", () => {
     expect(actionHistoryBefore).toHaveLength(0);
     expect(actionHistoryAfter[0]?.eventType).toBe("action-state-transition");
     expect(actionHistoryAfter[0]?.actionItemId).toBe("action-submind-schema");
+  });
+
+  it("supports durable memory curation and records a memory history event", async () => {
+    const repository = createPreviewRepository(createPreviewStoreSnapshot());
+
+    const memory = await repository.updateMemoryItem({
+      memoryId: "memory-submind-architecture",
+      summary: "Thin desktop shell boundary",
+      content:
+        "apps/desktop stays thin while packages own runtime, state, and retained knowledge.",
+      status: "active",
+      isPinned: true,
+      curationState: "edited",
+      changeSummary: "Clarified the thin-shell rule after runtime persistence landed.",
+      timestamp: "2026-03-30T10:20:00.000Z"
+    });
+    const history = await repository.getEventHistory({
+      memoryItemId: "memory-submind-architecture"
+    });
+
+    expect(memory.summary).toBe("Thin desktop shell boundary");
+    expect(memory.curationState).toBe("edited");
+    expect(memory.isEdited).toBe(true);
+    expect(history[0]?.eventType).toBe("memory-curated");
+    expect(history[0]?.summary).toContain("Clarified the thin-shell rule");
   });
 });

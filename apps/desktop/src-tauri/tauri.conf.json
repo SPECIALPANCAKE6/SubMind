@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.submind.desktop",
   "build": {
-    "beforeDevCommand": "..\\..\\node_modules\\.bin\\tsc.cmd -b && ..\\..\\node_modules\\.bin\\vite.cmd --config vite.config.ts",
-    "beforeBuildCommand": "..\\..\\node_modules\\.bin\\tsc.cmd -b && ..\\..\\node_modules\\.bin\\vite.cmd build --config vite.config.ts",
+    "beforeDevCommand": "..\\..\\node_modules\\.bin\\tsc.cmd -b --force && ..\\..\\node_modules\\.bin\\vite.cmd --config vite.config.ts",
+    "beforeBuildCommand": "..\\..\\node_modules\\.bin\\tsc.cmd -b --force && ..\\..\\node_modules\\.bin\\vite.cmd build --config vite.config.ts",
     "devUrl": "http://127.0.0.1:4173",
     "frontendDist": "../web-dist"
   },

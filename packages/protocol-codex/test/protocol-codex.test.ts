@@ -8,7 +8,7 @@ import {
 describe("protocol-codex", () => {
   it("normalizes local codex runtime data into a store snapshot", () => {
     const feed: CodexRuntimeFeed = {
-      profileName: "xtrem",
+      profileName: "Operator",
       threads: [
         {
           id: "thread-1",
@@ -73,7 +73,7 @@ describe("protocol-codex", () => {
 
   it("builds a codex protocol envelope from the active session/thread slice", () => {
     const snapshot = createStoreSnapshotFromCodexRuntimeFeed({
-      profileName: "xtrem",
+      profileName: "Operator",
       threads: [
         {
           id: "thread-1",

@@ -14,9 +14,11 @@ import type {
   ActionStateTransitionInput,
   EventHistoryQueryInput,
   FileChangeHistoryQueryInput,
+  MemoryCurationInput,
   SubMindRepository,
   SubMindStoreSnapshot
 } from "./index.js";
+import { deriveRetainedState } from "./runtime-retained.js";
 
 export interface SubMindSqlQueryResult {
   rowsAffected: number;
@@ -150,6 +152,12 @@ const createTableStatements = [
     content TEXT NOT NULL,
     confidence TEXT NOT NULL,
     freshness TEXT NOT NULL,
+    curation_state TEXT NOT NULL DEFAULT 'derived',
+    source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+    source_file_change_ids_json TEXT NOT NULL DEFAULT '[]',
+    linked_action_item_ids_json TEXT NOT NULL DEFAULT '[]',
+    linked_guidance_item_ids_json TEXT NOT NULL DEFAULT '[]',
+    change_summary TEXT,
     is_pinned TEXT NOT NULL,
     is_edited TEXT NOT NULL
   )`,
@@ -165,7 +173,12 @@ const createTableStatements = [
     rationale TEXT NOT NULL,
     state TEXT NOT NULL,
     source TEXT NOT NULL,
-    linked_memory_item_ids_json TEXT NOT NULL
+    confidence REAL NOT NULL DEFAULT 0.5,
+    evidence_summary TEXT NOT NULL DEFAULT '',
+    policy_summary TEXT NOT NULL DEFAULT '',
+    linked_memory_item_ids_json TEXT NOT NULL,
+    linked_event_ids_json TEXT NOT NULL DEFAULT '[]',
+    linked_action_item_ids_json TEXT NOT NULL DEFAULT '[]'
   )`,
   `CREATE TABLE IF NOT EXISTS action_items (
     id TEXT PRIMARY KEY NOT NULL,
@@ -207,6 +220,11 @@ const clearCoreDataStatements = [
   "DELETE FROM sessions",
   "DELETE FROM projects",
   "DELETE FROM profiles"
+] as const;
+
+const clearDerivedRetainedDataStatements = [
+  "DELETE FROM guidance_items",
+  "DELETE FROM memory_items"
 ] as const;
 
 interface ProfileRow {
@@ -320,6 +338,12 @@ interface MemoryItemRow {
   content: string;
   confidence: string | number;
   freshness: string | number;
+  curationState: MemoryItem["curationState"];
+  sourceEventIdsJson: string;
+  sourceFileChangeIdsJson: string;
+  linkedActionItemIdsJson: string;
+  linkedGuidanceItemIdsJson: string;
+  changeSummary: string | null;
   isPinned: string | number | boolean;
   isEdited: string | number | boolean;
 }
@@ -336,7 +360,12 @@ interface GuidanceItemRow {
   rationale: string;
   state: GuidanceItem["state"];
   source: GuidanceItem["source"];
+  confidence: string | number;
+  evidenceSummary: string;
+  policySummary: string;
   linkedMemoryItemIdsJson: string;
+  linkedEventIdsJson: string;
+  linkedActionItemIdsJson: string;
 }
 
 interface ActionItemRow {
@@ -529,6 +558,12 @@ function mapMemoryItemRow(row: MemoryItemRow): MemoryItem {
     content: row.content,
     confidence: parseNumberValue(row.confidence),
     freshness: parseNumberValue(row.freshness),
+    curationState: row.curationState,
+    sourceEventIds: parseStringArrayJson(row.sourceEventIdsJson),
+    sourceFileChangeIds: parseStringArrayJson(row.sourceFileChangeIdsJson),
+    linkedActionItemIds: parseStringArrayJson(row.linkedActionItemIdsJson),
+    linkedGuidanceItemIds: parseStringArrayJson(row.linkedGuidanceItemIdsJson),
+    ...(row.changeSummary ? { changeSummary: row.changeSummary } : {}),
     isPinned: parseBooleanValue(row.isPinned),
     isEdited: parseBooleanValue(row.isEdited)
   };
@@ -548,7 +583,12 @@ function mapGuidanceItemRow(row: GuidanceItemRow): GuidanceItem {
     rationale: row.rationale,
     state: row.state,
     source: row.source,
-    linkedMemoryItemIds: parseStringArrayJson(row.linkedMemoryItemIdsJson)
+    confidence: parseNumberValue(row.confidence),
+    evidenceSummary: row.evidenceSummary,
+    policySummary: row.policySummary,
+    linkedMemoryItemIds: parseStringArrayJson(row.linkedMemoryItemIdsJson),
+    linkedEventIds: parseStringArrayJson(row.linkedEventIdsJson),
+    linkedActionItemIds: parseStringArrayJson(row.linkedActionItemIdsJson)
   };
 }
 
@@ -600,6 +640,40 @@ function createActionTransitionEventRecord(
       actor,
       previousState: actionRow.state,
       nextState: input.nextState
+    })
+  };
+}
+
+function createMemoryCurationEventRecord(
+  memoryRow: MemoryItemRow,
+  input: MemoryCurationInput,
+  timestamp: string,
+  actor: ActionItem["owner"],
+  projectId: string
+) {
+  return {
+    id: `event-memory-${memoryRow.id}-${timestamp.replaceAll(/[^0-9]/g, "")}`,
+    projectId,
+    sessionId: memoryRow.sessionId,
+    threadId: memoryRow.threadId,
+    memoryItemId: memoryRow.id,
+    originType: "submind" as const,
+    eventType: "memory-curated",
+    category: "memory" as const,
+    nodeCategory: "cognitive" as const,
+    timestamp,
+    summary:
+      input.changeSummary ??
+      `${memoryRow.summary} was curated as ${input.curationState}.`,
+    metadataJson: JSON.stringify({
+      memoryId: memoryRow.id,
+      actor,
+      previousStatus: memoryRow.status,
+      nextStatus: input.status,
+      previousPinned: parseBooleanValue(memoryRow.isPinned),
+      nextPinned: input.isPinned,
+      previousCurationState: memoryRow.curationState,
+      nextCurationState: input.curationState
     })
   };
 }
@@ -724,9 +798,95 @@ function buildFileChangeHistoryQuery(input: FileChangeHistoryQueryInput = {}): {
   };
 }
 
+const ensuredColumns = [
+  {
+    tableName: "memory_items",
+    columnName: "curation_state",
+    columnDefinition: "TEXT NOT NULL DEFAULT 'derived'"
+  },
+  {
+    tableName: "memory_items",
+    columnName: "source_event_ids_json",
+    columnDefinition: "TEXT NOT NULL DEFAULT '[]'"
+  },
+  {
+    tableName: "memory_items",
+    columnName: "source_file_change_ids_json",
+    columnDefinition: "TEXT NOT NULL DEFAULT '[]'"
+  },
+  {
+    tableName: "memory_items",
+    columnName: "linked_action_item_ids_json",
+    columnDefinition: "TEXT NOT NULL DEFAULT '[]'"
+  },
+  {
+    tableName: "memory_items",
+    columnName: "linked_guidance_item_ids_json",
+    columnDefinition: "TEXT NOT NULL DEFAULT '[]'"
+  },
+  {
+    tableName: "memory_items",
+    columnName: "change_summary",
+    columnDefinition: "TEXT"
+  },
+  {
+    tableName: "guidance_items",
+    columnName: "confidence",
+    columnDefinition: "REAL NOT NULL DEFAULT 0.5"
+  },
+  {
+    tableName: "guidance_items",
+    columnName: "evidence_summary",
+    columnDefinition: "TEXT NOT NULL DEFAULT ''"
+  },
+  {
+    tableName: "guidance_items",
+    columnName: "policy_summary",
+    columnDefinition: "TEXT NOT NULL DEFAULT ''"
+  },
+  {
+    tableName: "guidance_items",
+    columnName: "linked_event_ids_json",
+    columnDefinition: "TEXT NOT NULL DEFAULT '[]'"
+  },
+  {
+    tableName: "guidance_items",
+    columnName: "linked_action_item_ids_json",
+    columnDefinition: "TEXT NOT NULL DEFAULT '[]'"
+  }
+] as const;
+
+async function ensureColumnExists(
+  db: SubMindSqlDatabase,
+  tableName: string,
+  columnName: string,
+  columnDefinition: string
+): Promise<void> {
+  const rows = await db.select<Array<{ name: string }>>(
+    `PRAGMA table_info(${tableName})`
+  );
+
+  if (rows.some((row) => row.name === columnName)) {
+    return;
+  }
+
+  await db.execute(
+    `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`
+  );
+}
+
 async function ensureSchema(db: SubMindSqlDatabase): Promise<void> {
   for (const statement of createTableStatements) {
     await db.execute(statement);
+  }
+
+  for (const ensuredColumn of ensuredColumns) {
+    await ensureColumnExists(
+      db,
+      ensuredColumn.tableName,
+      ensuredColumn.columnName,
+      ensuredColumn.columnDefinition
+    );
   }
 }
 
@@ -752,9 +912,14 @@ async function seedCoreSnapshotIntoDatabase(
 ): Promise<void> {
   for (const profile of snapshot.profiles) {
     await db.execute(
-      `INSERT OR IGNORE INTO profiles
+      `INSERT INTO profiles
        (id, created_at, updated_at, display_name, default_project_id, metadata_json)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT(id) DO UPDATE SET
+         updated_at = excluded.updated_at,
+         display_name = excluded.display_name,
+         default_project_id = excluded.default_project_id,
+         metadata_json = excluded.metadata_json`,
       [
         profile.id,
         profile.createdAt,
@@ -768,9 +933,18 @@ async function seedCoreSnapshotIntoDatabase(
 
   for (const project of snapshot.projects) {
     await db.execute(
-      `INSERT OR IGNORE INTO projects
+      `INSERT INTO projects
        (id, created_at, updated_at, profile_id, name, description, summary, workspace_path, repository_remote, descriptors_json)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT(id) DO UPDATE SET
+         updated_at = excluded.updated_at,
+         profile_id = excluded.profile_id,
+         name = excluded.name,
+         description = excluded.description,
+         summary = excluded.summary,
+         workspace_path = excluded.workspace_path,
+         repository_remote = excluded.repository_remote,
+         descriptors_json = excluded.descriptors_json`,
       [
         project.id,
         project.createdAt,
@@ -788,9 +962,17 @@ async function seedCoreSnapshotIntoDatabase(
 
   for (const session of snapshot.sessions) {
     await db.execute(
-      `INSERT OR IGNORE INTO sessions
+      `INSERT INTO sessions
        (id, created_at, updated_at, profile_id, project_id, status, summary, started_at, completed_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT(id) DO UPDATE SET
+         updated_at = excluded.updated_at,
+         profile_id = excluded.profile_id,
+         project_id = excluded.project_id,
+         status = excluded.status,
+         summary = excluded.summary,
+         started_at = excluded.started_at,
+         completed_at = excluded.completed_at`,
       [
         session.id,
         session.createdAt,
@@ -807,9 +989,16 @@ async function seedCoreSnapshotIntoDatabase(
 
   for (const thread of snapshot.threads) {
     await db.execute(
-      `INSERT OR IGNORE INTO threads
+      `INSERT INTO threads
        (id, created_at, updated_at, session_id, project_id, title, status, summary)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT(id) DO UPDATE SET
+         updated_at = excluded.updated_at,
+         session_id = excluded.session_id,
+         project_id = excluded.project_id,
+         title = excluded.title,
+         status = excluded.status,
+         summary = excluded.summary`,
       [
         thread.id,
         thread.createdAt,
@@ -825,9 +1014,18 @@ async function seedCoreSnapshotIntoDatabase(
 
   for (const task of snapshot.tasks) {
     await db.execute(
-      `INSERT OR IGNORE INTO tasks
+      `INSERT INTO tasks
        (id, created_at, updated_at, session_id, thread_id, project_id, title, status, priority, summary)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT(id) DO UPDATE SET
+         updated_at = excluded.updated_at,
+         session_id = excluded.session_id,
+         thread_id = excluded.thread_id,
+         project_id = excluded.project_id,
+         title = excluded.title,
+         status = excluded.status,
+         priority = excluded.priority,
+         summary = excluded.summary`,
       [
         task.id,
         task.createdAt,
@@ -845,9 +1043,26 @@ async function seedCoreSnapshotIntoDatabase(
 
   for (const event of snapshot.events) {
     await db.execute(
-      `INSERT OR IGNORE INTO events
+      `INSERT INTO events
        (id, created_at, updated_at, project_id, session_id, thread_id, task_id, file_change_id, guidance_item_id, action_item_id, memory_item_id, origin_type, event_type, category, node_category, timestamp, summary, metadata_json)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+       ON CONFLICT(id) DO UPDATE SET
+         updated_at = excluded.updated_at,
+         project_id = excluded.project_id,
+         session_id = excluded.session_id,
+         thread_id = excluded.thread_id,
+         task_id = excluded.task_id,
+         file_change_id = excluded.file_change_id,
+         guidance_item_id = excluded.guidance_item_id,
+         action_item_id = excluded.action_item_id,
+         memory_item_id = excluded.memory_item_id,
+         origin_type = excluded.origin_type,
+         event_type = excluded.event_type,
+         category = excluded.category,
+         node_category = excluded.node_category,
+         timestamp = excluded.timestamp,
+         summary = excluded.summary,
+         metadata_json = excluded.metadata_json`,
       [
         event.id,
         event.createdAt,
@@ -873,9 +1088,24 @@ async function seedCoreSnapshotIntoDatabase(
 
   for (const fileChange of snapshot.fileChanges) {
     await db.execute(
-      `INSERT OR IGNORE INTO file_changes
+      `INSERT INTO file_changes
        (id, created_at, updated_at, event_id, project_id, session_id, thread_id, task_id, path, change_type, from_path, summary, diff_preview, language, file_type, git_ref)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       ON CONFLICT(id) DO UPDATE SET
+         updated_at = excluded.updated_at,
+         event_id = excluded.event_id,
+         project_id = excluded.project_id,
+         session_id = excluded.session_id,
+         thread_id = excluded.thread_id,
+         task_id = excluded.task_id,
+         path = excluded.path,
+         change_type = excluded.change_type,
+         from_path = excluded.from_path,
+         summary = excluded.summary,
+         diff_preview = excluded.diff_preview,
+         language = excluded.language,
+         file_type = excluded.file_type,
+         git_ref = excluded.git_ref`,
       [
         fileChange.id,
         fileChange.createdAt,
@@ -904,9 +1134,28 @@ async function seedRetainedSnapshotIntoDatabase(
 ): Promise<void> {
   for (const memoryItem of snapshot.memory) {
     await db.execute(
-      `INSERT OR IGNORE INTO memory_items
-       (id, created_at, updated_at, project_id, session_id, thread_id, bucket, status, summary, content, confidence, freshness, is_pinned, is_edited)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+      `INSERT INTO memory_items
+       (id, created_at, updated_at, project_id, session_id, thread_id, bucket, status, summary, content, confidence, freshness, curation_state, source_event_ids_json, source_file_change_ids_json, linked_action_item_ids_json, linked_guidance_item_ids_json, change_summary, is_pinned, is_edited)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+       ON CONFLICT(id) DO UPDATE SET
+         updated_at = excluded.updated_at,
+         project_id = excluded.project_id,
+         session_id = excluded.session_id,
+         thread_id = excluded.thread_id,
+         bucket = excluded.bucket,
+         status = excluded.status,
+         summary = excluded.summary,
+         content = excluded.content,
+         confidence = excluded.confidence,
+         freshness = excluded.freshness,
+         curation_state = excluded.curation_state,
+         source_event_ids_json = excluded.source_event_ids_json,
+         source_file_change_ids_json = excluded.source_file_change_ids_json,
+         linked_action_item_ids_json = excluded.linked_action_item_ids_json,
+         linked_guidance_item_ids_json = excluded.linked_guidance_item_ids_json,
+         change_summary = excluded.change_summary,
+         is_pinned = excluded.is_pinned,
+         is_edited = excluded.is_edited`,
       [
         memoryItem.id,
         memoryItem.createdAt,
@@ -920,6 +1169,12 @@ async function seedRetainedSnapshotIntoDatabase(
         memoryItem.content,
         String(memoryItem.confidence),
         String(memoryItem.freshness),
+        memoryItem.curationState,
+        JSON.stringify(memoryItem.sourceEventIds),
+        JSON.stringify(memoryItem.sourceFileChangeIds),
+        JSON.stringify(memoryItem.linkedActionItemIds),
+        JSON.stringify(memoryItem.linkedGuidanceItemIds),
+        memoryItem.changeSummary ?? null,
         stringifyBoolean(memoryItem.isPinned),
         stringifyBoolean(memoryItem.isEdited)
       ]
@@ -928,9 +1183,25 @@ async function seedRetainedSnapshotIntoDatabase(
 
   for (const guidanceItem of snapshot.guidance) {
     await db.execute(
-      `INSERT OR IGNORE INTO guidance_items
-       (id, created_at, updated_at, project_id, session_id, thread_id, title, summary, rationale, state, source, linked_memory_item_ids_json)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      `INSERT INTO guidance_items
+       (id, created_at, updated_at, project_id, session_id, thread_id, title, summary, rationale, state, source, confidence, evidence_summary, policy_summary, linked_memory_item_ids_json, linked_event_ids_json, linked_action_item_ids_json)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+       ON CONFLICT(id) DO UPDATE SET
+         updated_at = excluded.updated_at,
+         project_id = excluded.project_id,
+         session_id = excluded.session_id,
+         thread_id = excluded.thread_id,
+         title = excluded.title,
+         summary = excluded.summary,
+         rationale = excluded.rationale,
+         state = excluded.state,
+         source = excluded.source,
+         confidence = excluded.confidence,
+         evidence_summary = excluded.evidence_summary,
+         policy_summary = excluded.policy_summary,
+         linked_memory_item_ids_json = excluded.linked_memory_item_ids_json,
+         linked_event_ids_json = excluded.linked_event_ids_json,
+         linked_action_item_ids_json = excluded.linked_action_item_ids_json`,
       [
         guidanceItem.id,
         guidanceItem.createdAt,
@@ -943,16 +1214,36 @@ async function seedRetainedSnapshotIntoDatabase(
         guidanceItem.rationale,
         guidanceItem.state,
         guidanceItem.source,
+        guidanceItem.confidence,
+        guidanceItem.evidenceSummary,
+        guidanceItem.policySummary,
         JSON.stringify(guidanceItem.linkedMemoryItemIds)
+        ,
+        JSON.stringify(guidanceItem.linkedEventIds),
+        JSON.stringify(guidanceItem.linkedActionItemIds)
       ]
     );
   }
 
   for (const actionItem of snapshot.actions) {
     await db.execute(
-      `INSERT OR IGNORE INTO action_items
+      `INSERT INTO action_items
        (id, created_at, updated_at, project_id, session_id, thread_id, title, summary, state, risk_level, risk_summary, risk_factors_json, expected_outcome, actual_outcome, owner)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+       ON CONFLICT(id) DO UPDATE SET
+         updated_at = excluded.updated_at,
+         project_id = excluded.project_id,
+         session_id = excluded.session_id,
+         thread_id = excluded.thread_id,
+         title = excluded.title,
+         summary = excluded.summary,
+         state = excluded.state,
+         risk_level = excluded.risk_level,
+         risk_summary = excluded.risk_summary,
+         risk_factors_json = excluded.risk_factors_json,
+         expected_outcome = excluded.expected_outcome,
+         actual_outcome = excluded.actual_outcome,
+         owner = excluded.owner`,
       [
         actionItem.id,
         actionItem.createdAt,
@@ -1008,6 +1299,30 @@ async function setAppStateValue(
   );
 }
 
+function createRuntimeRetainedSnapshot(
+  snapshot: SubMindStoreSnapshot,
+  existingSnapshot: SubMindStoreSnapshot
+): SubMindStoreSnapshot {
+  const retainedActions =
+    snapshot.actions.length > 0 ? snapshot.actions : existingSnapshot.actions;
+  const derivedRetainedState = deriveRetainedState(
+    {
+      ...snapshot,
+      actions: retainedActions,
+      memory: existingSnapshot.memory,
+      guidance: existingSnapshot.guidance
+    },
+    new Date().toISOString()
+  );
+
+  return {
+    ...snapshot,
+    memory: derivedRetainedState.memory,
+    guidance: derivedRetainedState.guidance,
+    actions: retainedActions
+  };
+}
+
 export async function syncRuntimeSnapshotIntoDatabase(
   db: SubMindSqlDatabase,
   snapshot: SubMindStoreSnapshot
@@ -1015,14 +1330,36 @@ export async function syncRuntimeSnapshotIntoDatabase(
   await ensureSchema(db);
 
   const currentRuntimeSource = await getAppStateValue(db, runtimeSourceKey);
+  const existingSnapshot =
+    currentRuntimeSource === runtimeSourceValue
+      ? await readSnapshot(db)
+      : {
+          profiles: [],
+          projects: [],
+          sessions: [],
+          threads: [],
+          tasks: [],
+          events: [],
+          fileChanges: [],
+          memory: [],
+          guidance: [],
+          actions: []
+        };
+
+  if (currentRuntimeSource !== runtimeSourceValue) {
+    await executeStatements(db, clearAllDataStatements);
+  }
+
+  await seedCoreSnapshotIntoDatabase(db, snapshot);
 
   if (currentRuntimeSource === runtimeSourceValue) {
-    await executeStatements(db, clearCoreDataStatements);
-    await seedCoreSnapshotIntoDatabase(db, snapshot);
-  } else {
-    await executeStatements(db, clearAllDataStatements);
-    await seedSnapshotIntoDatabase(db, snapshot);
+    await executeStatements(db, clearDerivedRetainedDataStatements);
   }
+
+  await seedRetainedSnapshotIntoDatabase(
+    db,
+    createRuntimeRetainedSnapshot(snapshot, existingSnapshot)
+  );
 
   await setAppStateValue(db, runtimeSourceKey, runtimeSourceValue);
 }
@@ -1166,6 +1503,12 @@ async function readSnapshot(db: SubMindSqlDatabase): Promise<SubMindStoreSnapsho
          content,
          confidence,
          freshness,
+         curation_state AS curationState,
+         source_event_ids_json AS sourceEventIdsJson,
+         source_file_change_ids_json AS sourceFileChangeIdsJson,
+         linked_action_item_ids_json AS linkedActionItemIdsJson,
+         linked_guidance_item_ids_json AS linkedGuidanceItemIdsJson,
+         change_summary AS changeSummary,
          is_pinned AS isPinned,
          is_edited AS isEdited
        FROM memory_items
@@ -1187,7 +1530,12 @@ async function readSnapshot(db: SubMindSqlDatabase): Promise<SubMindStoreSnapsho
          rationale,
          state,
          source,
-         linked_memory_item_ids_json AS linkedMemoryItemIdsJson
+         confidence,
+         evidence_summary AS evidenceSummary,
+         policy_summary AS policySummary,
+         linked_memory_item_ids_json AS linkedMemoryItemIdsJson,
+         linked_event_ids_json AS linkedEventIdsJson,
+         linked_action_item_ids_json AS linkedActionItemIdsJson
        FROM guidance_items
        ORDER BY
          CASE state
@@ -1299,6 +1647,67 @@ async function selectActionRow(
   return rows[0] ?? null;
 }
 
+async function selectMemoryRow(
+  db: SubMindSqlDatabase,
+  memoryId: string
+): Promise<MemoryItemRow | null> {
+  const rows = await db.select<MemoryItemRow[]>(
+    `SELECT
+       id,
+       created_at AS createdAt,
+       updated_at AS updatedAt,
+       project_id AS projectId,
+       session_id AS sessionId,
+       thread_id AS threadId,
+       bucket,
+       status,
+       summary,
+       content,
+       confidence,
+       freshness,
+       curation_state AS curationState,
+       source_event_ids_json AS sourceEventIdsJson,
+       source_file_change_ids_json AS sourceFileChangeIdsJson,
+       linked_action_item_ids_json AS linkedActionItemIdsJson,
+       linked_guidance_item_ids_json AS linkedGuidanceItemIdsJson,
+       change_summary AS changeSummary,
+       is_pinned AS isPinned,
+       is_edited AS isEdited
+     FROM memory_items
+     WHERE id = $1`,
+    [memoryId]
+  );
+
+  return rows[0] ?? null;
+}
+
+async function selectFallbackProjectId(
+  db: SubMindSqlDatabase
+): Promise<string | null> {
+  const profileRows = await db.select<
+    Array<{ defaultProjectId: string | null }>
+  >(
+    `SELECT default_project_id AS defaultProjectId
+     FROM profiles
+     WHERE default_project_id IS NOT NULL
+     ORDER BY updated_at DESC
+     LIMIT 1`
+  );
+
+  if (profileRows[0]?.defaultProjectId) {
+    return profileRows[0].defaultProjectId;
+  }
+
+  const projectRows = await db.select<Array<{ id: string }>>(
+    `SELECT id
+     FROM projects
+     ORDER BY updated_at DESC, created_at DESC
+     LIMIT 1`
+  );
+
+  return projectRows[0]?.id ?? null;
+}
+
 export function createSqliteRepository(
   options: CreateSqliteRepositoryOptions
 ): SubMindRepository {
@@ -1397,6 +1806,86 @@ export function createSqliteRepository(
         ...existingAction,
         state: input.nextState,
         actualOutcome: nextActualOutcome ?? null,
+        updatedAt: timestamp
+      });
+    },
+    async updateMemoryItem(input) {
+      await ensureInitialized();
+
+      const existingMemory = await selectMemoryRow(db, input.memoryId);
+
+      if (!existingMemory) {
+        throw new Error(`Memory item "${input.memoryId}" was not found.`);
+      }
+
+      const timestamp = input.timestamp ?? now();
+      const actor = input.actor ?? "operator";
+      const fallbackProjectId =
+        existingMemory.projectId ?? (await selectFallbackProjectId(db)) ?? "project-global";
+
+      await db.execute(
+        `UPDATE memory_items
+         SET summary = $1,
+             content = $2,
+             status = $3,
+             curation_state = $4,
+             change_summary = $5,
+             is_pinned = $6,
+             is_edited = $7,
+             updated_at = $8
+         WHERE id = $9`,
+        [
+          input.summary,
+          input.content,
+          input.status,
+          input.curationState,
+          input.changeSummary ?? null,
+          stringifyBoolean(input.isPinned),
+          stringifyBoolean(input.curationState === "edited"),
+          timestamp,
+          input.memoryId
+        ]
+      );
+
+      const eventRecord = createMemoryCurationEventRecord(
+        existingMemory,
+        input,
+        timestamp,
+        actor,
+        fallbackProjectId
+      );
+
+      await db.execute(
+        `INSERT INTO events
+         (id, created_at, updated_at, project_id, session_id, thread_id, task_id, file_change_id, guidance_item_id, action_item_id, memory_item_id, origin_type, event_type, category, node_category, timestamp, summary, metadata_json)
+         VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, NULL, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        [
+          eventRecord.id,
+          timestamp,
+          timestamp,
+          eventRecord.projectId,
+          eventRecord.sessionId,
+          eventRecord.threadId,
+          eventRecord.memoryItemId,
+          eventRecord.originType,
+          eventRecord.eventType,
+          eventRecord.category,
+          eventRecord.nodeCategory,
+          eventRecord.timestamp,
+          eventRecord.summary,
+          eventRecord.metadataJson
+        ]
+      );
+
+      return mapMemoryItemRow({
+        ...existingMemory,
+        summary: input.summary,
+        content: input.content,
+        status: input.status,
+        curationState: input.curationState,
+        changeSummary: input.changeSummary ?? null,
+        isPinned: stringifyBoolean(input.isPinned),
+        isEdited: stringifyBoolean(input.curationState === "edited"),
         updatedAt: timestamp
       });
     }

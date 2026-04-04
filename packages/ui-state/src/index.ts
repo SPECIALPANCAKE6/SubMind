@@ -6,7 +6,6 @@ import {
 import {
   createPreviewRepository,
   getPrimarySessionTask,
-  getPrimarySessionThread,
   getProjectActionItems,
   getProjectById,
   getProjectEvents,
@@ -25,11 +24,15 @@ import {
 } from "@submind/workers";
 import type {
   ActionItem,
+  Event,
+  FileChange,
   GuidanceItem,
   MemoryItem,
   Project,
   ProjectStackState,
-  Session
+  Session,
+  Task,
+  Thread
 } from "@submind/shared-schemas";
 import { create } from "zustand";
 
@@ -52,6 +55,7 @@ export interface ShellUiState {
   selectedProjectId: string | null;
   focusedProjectId: string | null;
   activeSessionId: string | null;
+  activeThreadId: string | null;
   activeMemoryId: string | null;
   activeGuidanceId: string | null;
   activeActionId: string | null;
@@ -103,14 +107,58 @@ export interface SessionListItemModel {
   isEmphasized: boolean;
 }
 
+export interface SessionThreadItemModel {
+  threadId: string;
+  title: string;
+  summary: string;
+  status: Thread["status"];
+  updatedAtLabel: string;
+  taskCount: number;
+  eventCount: number;
+  fileChangeCount: number;
+  isActive: boolean;
+}
+
+export interface SessionTaskItemModel {
+  taskId: string;
+  title: string;
+  summary: string;
+  status: Task["status"];
+  priority: Task["priority"];
+  updatedAtLabel: string;
+}
+
 export interface TraceEventItemModel {
   eventId: string;
   projectName: string;
   summary: string;
   category: string;
+  eventType: string;
+  originLabel: string;
   nodeCategory: string;
+  fileChangeLabel: string;
   timestampLabel: string;
   isEmphasized: boolean;
+}
+
+export interface SessionFileChangeItemModel {
+  fileChangeId: string;
+  path: string;
+  changeType: FileChange["changeType"];
+  summary: string;
+  eventSummary: string;
+  languageLabel: string;
+  updatedAtLabel: string;
+}
+
+export interface SessionContextLinkModel {
+  id: string;
+  kind: "action" | "guidance" | "memory";
+  title: string;
+  summary: string;
+  meta: string;
+  tone: ShellCardModel["tone"];
+  targetId: string;
 }
 
 export interface MemoryCardModel {
@@ -121,6 +169,9 @@ export interface MemoryCardModel {
   projectName: string;
   confidenceLabel: string;
   freshnessLabel: string;
+  curationLabel: string;
+  provenanceLabel: string;
+  changeLabel: string;
   isPinned: boolean;
   isActive: boolean;
   isEmphasized: boolean;
@@ -133,10 +184,57 @@ export interface GuidanceCardModel {
   state: GuidanceItem["state"];
   source: GuidanceItem["source"];
   projectName: string;
+  confidenceLabel: string;
+  evidenceLabel: string;
+  policyLabel: string;
   linkedMemoryLabel: string;
   actionPressureLabel: string;
   isActive: boolean;
   isEmphasized: boolean;
+}
+
+export interface RetainedHistoryItemModel {
+  eventId: string;
+  summary: string;
+  timestampLabel: string;
+  originLabel: string;
+  metaLabel: string;
+  isLatest: boolean;
+}
+
+export interface MemoryInspectorModel {
+  memoryId: string | null;
+  title: string;
+  content: string;
+  projectName: string;
+  bucketLabel: string;
+  statusLabel: string;
+  confidenceLabel: string;
+  freshnessLabel: string;
+  curationLabel: string;
+  provenanceSummary: string;
+  changeSummary: string;
+  linkedContext: SessionContextLinkModel[];
+  sourceEvents: TraceEventItemModel[];
+  sourceFiles: SessionFileChangeItemModel[];
+  historyItems: RetainedHistoryItemModel[];
+  isPinned: boolean;
+}
+
+export interface GuidanceInspectorModel {
+  guidanceId: string | null;
+  title: string;
+  summary: string;
+  rationale: string;
+  projectName: string;
+  stateLabel: string;
+  sourceLabel: string;
+  confidenceLabel: string;
+  evidenceSummary: string;
+  policySummary: string;
+  linkedContext: SessionContextLinkModel[];
+  evidenceEvents: TraceEventItemModel[];
+  historyItems: RetainedHistoryItemModel[];
 }
 
 export interface ActionCardModel {
@@ -151,6 +249,39 @@ export interface ActionCardModel {
   outcomeLabel: string;
   isActive: boolean;
   isEmphasized: boolean;
+}
+
+export type ActionTransitionState = Extract<
+  ActionItem["state"],
+  "approved" | "rejected" | "blocked" | "resolved"
+>;
+
+export interface ActionTransitionControlModel {
+  nextState: ActionTransitionState;
+  label: string;
+  tone: ShellCardModel["tone"];
+  description: string;
+  isDisabled: boolean;
+}
+
+export interface ActionHistoryItemModel {
+  eventId: string;
+  summary: string;
+  timestampLabel: string;
+  actorLabel: string;
+  transitionLabel: string;
+  isLatest: boolean;
+}
+
+export interface ShellViewModelOptions {
+  actionOutcomeDraft?: string;
+  isActionMutationPending?: boolean;
+  pendingActionTransition?: ActionTransitionState | null;
+  memorySummaryDraft?: string;
+  memoryContentDraft?: string;
+  memoryStatusDraft?: MemoryItem["status"] | "";
+  memoryPinnedDraft?: boolean | null;
+  isMemoryMutationPending?: boolean;
 }
 
 export interface SubMindShellViewModel {
@@ -187,29 +318,48 @@ export interface SubMindShellViewModel {
   sessions: {
     title: string;
     body: string;
+    activeSessionId: string | null;
+    activeThreadId: string | null;
     sessions: SessionListItemModel[];
+    threads: SessionThreadItemModel[];
+    tasks: SessionTaskItemModel[];
     traceItems: TraceEventItemModel[];
+    fileChanges: SessionFileChangeItemModel[];
+    linkedContext: SessionContextLinkModel[];
     inspector: ShellCardModel;
   };
   memory: {
     title: string;
     body: string;
     cards: MemoryCardModel[];
-    inspector: ShellCardModel;
+    inspector: MemoryInspectorModel;
+    draftSummary: string;
+    draftContent: string;
+    draftStatus: MemoryItem["status"] | "";
+    draftIsPinned: boolean;
+    isMutationPending: boolean;
   };
   guidance: {
     title: string;
     body: string;
     posture: ShellCardModel;
     cards: GuidanceCardModel[];
-    inspector: ShellCardModel;
+    inspector: GuidanceInspectorModel;
   };
   actions: {
     title: string;
     body: string;
     posture: ShellCardModel;
     cards: ActionCardModel[];
+    activeActionId: string | null;
     mainView: ShellCardModel;
+    expectedOutcome: string;
+    actualOutcome: string;
+    actualOutcomePlaceholder: string;
+    transitionControls: ActionTransitionControlModel[];
+    historyItems: ActionHistoryItemModel[];
+    isMutationPending: boolean;
+    pendingActionTransition: ActionTransitionState | null;
     inspector: ShellCardModel;
   };
 }
@@ -223,6 +373,7 @@ export interface ShellStore extends ShellUiState {
   clearProjectSelection: () => void;
   clearProjectFocus: () => void;
   selectSession: (sessionId: string) => void;
+  selectThread: (threadId: string) => void;
   selectMemory: (memoryId: string) => void;
   selectGuidance: (guidanceId: string) => void;
   selectAction: (actionId: string) => void;
@@ -248,6 +399,7 @@ function resetEntitySelections(state: ShellUiState): ShellUiState {
   return {
     ...state,
     activeSessionId: null,
+    activeThreadId: null,
     activeMemoryId: null,
     activeGuidanceId: null,
     activeActionId: null
@@ -276,6 +428,7 @@ export function createInitialShellUiState(
       snapshot.profiles[0]?.defaultProjectId ?? snapshot.projects[0]?.id ?? null,
     focusedProjectId: null,
     activeSessionId: null,
+    activeThreadId: null,
     activeMemoryId: null,
     activeGuidanceId: null,
     activeActionId: null
@@ -384,7 +537,18 @@ export function selectShellSession(
 ): ShellUiState {
   return {
     ...state,
-    activeSessionId: state.activeSessionId === sessionId ? null : sessionId
+    activeSessionId: state.activeSessionId === sessionId ? null : sessionId,
+    activeThreadId: null
+  };
+}
+
+export function selectShellThread(
+  state: ShellUiState,
+  threadId: string
+): ShellUiState {
+  return {
+    ...state,
+    activeThreadId: state.activeThreadId === threadId ? null : threadId
   };
 }
 
@@ -424,6 +588,7 @@ export const useShellStore = create<ShellStore>((set) => ({
   selectedProjectId: null,
   focusedProjectId: null,
   activeSessionId: null,
+  activeThreadId: null,
   activeMemoryId: null,
   activeGuidanceId: null,
   activeActionId: null,
@@ -437,6 +602,7 @@ export const useShellStore = create<ShellStore>((set) => ({
   clearProjectSelection: () => set((state) => clearShellProjectSelection(state)),
   clearProjectFocus: () => set((state) => clearFocusedShellProject(state)),
   selectSession: (sessionId) => set((state) => selectShellSession(state, sessionId)),
+  selectThread: (threadId) => set((state) => selectShellThread(state, threadId)),
   selectMemory: (memoryId) => set((state) => selectShellMemory(state, memoryId)),
   selectGuidance: (guidanceId) =>
     set((state) => selectShellGuidance(state, guidanceId)),
@@ -499,6 +665,12 @@ function resolveSessionPool(
 
 function compareStrings(left: string, right: string): number {
   return left.localeCompare(right);
+}
+
+function formatTitleCase(value: string): string {
+  return value
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
 function createCard(
@@ -639,12 +811,133 @@ function createDashboardView(
   };
 }
 
+function getActiveSessionRecord(
+  snapshot: SubMindStoreSnapshot,
+  state: ShellUiState,
+  activeProject: Project | null
+): Session | null {
+  const pool = resolveSessionPool(snapshot, activeProject);
+
+  return (
+    pool.find((session) => session.id === state.activeSessionId) ??
+    pool[0] ??
+    null
+  );
+}
+
+function getActiveSessionThreadRecord(
+  snapshot: SubMindStoreSnapshot,
+  state: ShellUiState,
+  activeSession: Session | null
+): Thread | null {
+  if (!activeSession) {
+    return null;
+  }
+
+  const threads = getSessionThreads(snapshot, activeSession.id);
+
+  return (
+    threads.find((thread) => thread.id === state.activeThreadId) ??
+    threads[0] ??
+    null
+  );
+}
+
+function getSessionScopedGuidanceItems(
+  snapshot: SubMindStoreSnapshot,
+  session: Session | null,
+  thread: Thread | null
+): GuidanceItem[] {
+  if (!session) {
+    return [];
+  }
+
+  return snapshot.guidance.filter((guidanceItem) => {
+    if (guidanceItem.projectId !== session.projectId) {
+      return false;
+    }
+
+    if (thread) {
+      return guidanceItem.threadId === thread.id;
+    }
+
+    return guidanceItem.sessionId === session.id;
+  });
+}
+
+function getSessionScopedActionItems(
+  snapshot: SubMindStoreSnapshot,
+  session: Session | null,
+  thread: Thread | null
+): ActionItem[] {
+  if (!session) {
+    return [];
+  }
+
+  return snapshot.actions.filter((actionItem) => {
+    if (actionItem.projectId !== session.projectId) {
+      return false;
+    }
+
+    if (thread) {
+      return actionItem.threadId === thread.id;
+    }
+
+    return actionItem.sessionId === session.id;
+  });
+}
+
+function getSessionScopedMemoryItems(
+  snapshot: SubMindStoreSnapshot,
+  session: Session | null,
+  thread: Thread | null,
+  guidanceItems: GuidanceItem[],
+  events: Event[]
+): MemoryItem[] {
+  if (!session) {
+    return [];
+  }
+
+  const memoryIds = new Set<string>();
+
+  for (const guidanceItem of guidanceItems) {
+    for (const memoryId of guidanceItem.linkedMemoryItemIds) {
+      memoryIds.add(memoryId);
+    }
+  }
+
+  for (const event of events) {
+    if (event.memoryItemId) {
+      memoryIds.add(event.memoryItemId);
+    }
+  }
+
+  const linkedMemory = snapshot.memory.filter((memoryItem) => memoryIds.has(memoryItem.id));
+
+  if (linkedMemory.length > 0) {
+    return linkedMemory;
+  }
+
+  return snapshot.memory.filter((memoryItem) => {
+    if (memoryItem.projectId !== session.projectId) {
+      return false;
+    }
+
+    if (thread) {
+      return memoryItem.threadId === thread.id;
+    }
+
+    return memoryItem.sessionId === session.id || !memoryItem.sessionId;
+  });
+}
+
 function createSessionsView(
   snapshot: SubMindStoreSnapshot,
   state: ShellUiState,
   activeProject: Project | null
 ): SubMindShellViewModel["sessions"] {
-  const sessions = resolveSessionPool(snapshot, activeProject).map((session) => {
+  const sessionPool = resolveSessionPool(snapshot, activeProject);
+  const sessions = sessionPool.map((session) => {
     const project = getProjectById(snapshot, session.projectId);
     const threads = getSessionThreads(snapshot, session.id);
     const tasks = getSessionTasks(snapshot, session.id);
@@ -665,55 +958,347 @@ function createSessionsView(
     };
   });
 
-  const activeSession =
-    sessions.find((session) => session.sessionId === state.activeSessionId) ??
-    sessions[0];
-
-  const traceItems = (activeProject
-    ? [
-        ...getProjectEvents(snapshot, activeProject.id),
-        ...snapshot.events.filter((event) => event.projectId !== activeProject.id)
-      ]
-    : [...snapshot.events]
-  ).map((event) => ({
-    eventId: event.id,
-    projectName: getProjectById(snapshot, event.projectId)?.name ?? "Unknown project",
-    summary: event.summary,
-    category: event.category,
-    nodeCategory: event.nodeCategory,
-    timestampLabel: formatTimestampLabel(event.timestamp),
-    isEmphasized: activeProject?.id === event.projectId
-  }));
-
-  const activeSessionRecord = activeSession
-    ? snapshot.sessions.find((session) => session.id === activeSession.sessionId) ?? null
+  const activeSessionRecord = getActiveSessionRecord(snapshot, state, activeProject);
+  const activeThreadRecord = getActiveSessionThreadRecord(
+    snapshot,
+    state,
+    activeSessionRecord
+  );
+  const activeSession = activeSessionRecord
+    ? sessions.find((session) => session.sessionId === activeSessionRecord.id) ?? null
     : null;
+  const activeSessionThreads = activeSessionRecord
+    ? getSessionThreads(snapshot, activeSessionRecord.id)
+    : [];
+  const activeSessionTasks = activeSessionRecord
+    ? getSessionTasks(snapshot, activeSessionRecord.id)
+    : [];
+  const sessionTasks = activeThreadRecord
+    ? activeSessionTasks.filter((task) => task.threadId === activeThreadRecord.id)
+    : activeSessionTasks;
+  const traceEvents = (activeThreadRecord
+    ? snapshot.events.filter((event) => event.threadId === activeThreadRecord.id)
+    : activeSessionRecord
+      ? snapshot.events.filter((event) => event.sessionId === activeSessionRecord.id)
+      : []
+  ).sort((left, right) => compareStrings(left.timestamp, right.timestamp));
+  const traceItems = traceEvents.map((event) => {
+    const linkedFileChanges = snapshot.fileChanges.filter(
+      (fileChange) => fileChange.eventId === event.id
+    );
+
+    return {
+      eventId: event.id,
+      projectName:
+        getProjectById(snapshot, event.projectId)?.name ?? "Unknown project",
+      summary: event.summary,
+      category: event.category,
+      eventType: event.eventType,
+      originLabel: formatTitleCase(event.originType),
+      nodeCategory: event.nodeCategory,
+      fileChangeLabel:
+        linkedFileChanges.length > 0
+          ? pluralize(linkedFileChanges.length, "file change")
+          : "No file changes",
+      timestampLabel: formatTimestampLabel(event.timestamp),
+      isEmphasized:
+        activeThreadRecord !== null
+          ? event.threadId === activeThreadRecord.id
+          : activeSessionRecord !== null && event.sessionId === activeSessionRecord.id
+    };
+  });
+  const traceFileChanges = (activeThreadRecord
+    ? snapshot.fileChanges.filter((fileChange) => fileChange.threadId === activeThreadRecord.id)
+    : activeSessionRecord
+      ? snapshot.fileChanges.filter((fileChange) => fileChange.sessionId === activeSessionRecord.id)
+      : []
+  )
+    .sort((left, right) => compareStrings(right.updatedAt, left.updatedAt))
+    .map((fileChange) => ({
+      fileChangeId: fileChange.id,
+      path: fileChange.path,
+      changeType: fileChange.changeType,
+      summary: fileChange.summary ?? "No file-change summary recorded.",
+      eventSummary:
+        snapshot.events.find((event) => event.id === fileChange.eventId)?.summary ??
+        "No linked event summary.",
+      languageLabel: fileChange.language ?? fileChange.fileType,
+      updatedAtLabel: formatTimestampLabel(fileChange.updatedAt)
+    }));
+  const relatedGuidance = getSessionScopedGuidanceItems(
+    snapshot,
+    activeSessionRecord,
+    activeThreadRecord
+  );
+  const relatedActions = getSessionScopedActionItems(
+    snapshot,
+    activeSessionRecord,
+    activeThreadRecord
+  );
+  const relatedMemory = getSessionScopedMemoryItems(
+    snapshot,
+    activeSessionRecord,
+    activeThreadRecord,
+    relatedGuidance,
+    traceEvents
+  );
+  const linkedActionContext: SessionContextLinkModel[] = relatedActions
+    .slice(0, 2)
+    .map((actionItem) => ({
+      id: `action:${actionItem.id}`,
+      kind: "action",
+      title: actionItem.title,
+      summary: actionItem.summary ?? actionItem.riskSummary,
+      meta: `${formatTitleCase(actionItem.state)} / ${formatTitleCase(
+        actionItem.riskLevel
+      )}`,
+      tone: getActionTone(actionItem),
+      targetId: actionItem.id
+    }));
+  const linkedGuidanceContext: SessionContextLinkModel[] = relatedGuidance
+    .slice(0, 2)
+    .map((guidanceItem) => {
+      const tone: ShellCardModel["tone"] =
+        guidanceItem.state === "injected" ? "plum" : "violet";
+
+      return {
+        id: `guidance:${guidanceItem.id}`,
+        kind: "guidance",
+        title: guidanceItem.title,
+        summary: guidanceItem.summary,
+        meta: `${formatTitleCase(guidanceItem.state)} / ${formatTitleCase(
+          guidanceItem.source
+        )}`,
+        tone,
+        targetId: guidanceItem.id
+      };
+    });
+  const linkedMemoryContext: SessionContextLinkModel[] = relatedMemory
+    .slice(0, 2)
+    .map((memoryItem) => {
+      const tone: ShellCardModel["tone"] =
+        memoryItem.status === "stale" ? "amber" : "slate";
+
+      return {
+        id: `memory:${memoryItem.id}`,
+        kind: "memory",
+        title: memoryItem.summary,
+        summary: memoryItem.content,
+        meta: `${formatTitleCase(memoryItem.status)} / ${Math.round(
+          memoryItem.confidence * 100
+        )}% confidence`,
+        tone,
+        targetId: memoryItem.id
+      };
+    });
+  const linkedContext: SessionContextLinkModel[] = [
+    ...linkedActionContext,
+    ...linkedGuidanceContext,
+    ...linkedMemoryContext
+  ];
+  const threads = activeSessionThreads.map((thread) => {
+    const threadTasks = activeSessionTasks.filter((task) => task.threadId === thread.id);
+    const threadEvents = snapshot.events.filter((event) => event.threadId === thread.id);
+    const threadFileChanges = snapshot.fileChanges.filter(
+      (fileChange) => fileChange.threadId === thread.id
+    );
+
+    return {
+      threadId: thread.id,
+      title: thread.title,
+      summary: thread.summary ?? "No thread summary recorded.",
+      status: thread.status,
+      updatedAtLabel: formatTimestampLabel(thread.updatedAt),
+      taskCount: threadTasks.length,
+      eventCount: threadEvents.length,
+      fileChangeCount: threadFileChanges.length,
+      isActive: activeThreadRecord?.id === thread.id
+    };
+  });
+  const tasks = sessionTasks.map((task) => ({
+    taskId: task.id,
+    title: task.title,
+    summary: task.summary ?? "No task summary recorded.",
+    status: task.status,
+    priority: task.priority,
+    updatedAtLabel: formatTimestampLabel(task.updatedAt)
+  }));
+  const focusDescription = activeThreadRecord
+    ? `Focused thread: ${activeThreadRecord.title}.`
+    : activeSessionRecord
+      ? "Session-wide trace in view."
+      : "Choose a session to inspect its threads.";
 
   return {
     title: "Sessions / Activity / Work Trace",
     body:
-      "Session-first observability with thread and task context underneath the currently active scope.",
+      "Session-first observability with thread-centered trace, ordered events, concrete file changes, and linked context kept secondary.",
+    activeSessionId: activeSessionRecord?.id ?? null,
+    activeThreadId: activeThreadRecord?.id ?? null,
     sessions,
+    threads,
+    tasks,
     traceItems,
+    fileChanges: traceFileChanges,
+    linkedContext,
     inspector: createCard(
       "sessions-inspector",
-      "Context Inspector",
+      "Session Trace Overview",
       activeSession?.title ?? "Select a session",
       activeSessionRecord
-        ? `${activeSessionRecord.summary ?? "No summary."} Primary task: ${
+        ? `${activeSessionRecord.summary ?? "No summary."} ${focusDescription} ${pluralize(
+            activeSessionThreads.length,
+            "thread"
+          )}, ${pluralize(activeSessionTasks.length, "task")}, ${pluralize(
+            traceEvents.length,
+            "event"
+          )}, and ${pluralize(traceFileChanges.length, "file change")} are in view. Primary task: ${
             getPrimarySessionTask(snapshot, activeSessionRecord.id)?.title ??
             "No current task"
           }.`
         : "Choose a session to inspect its thread, task, and work-trace posture.",
-      "plum"
+      activeSessionRecord?.status === "active" ? "plum" : "slate"
     )
   };
+}
+
+function createTraceEventItem(
+  snapshot: SubMindStoreSnapshot,
+  event: Event,
+  isEmphasized: boolean
+): TraceEventItemModel {
+  const linkedFileChanges = snapshot.fileChanges.filter(
+    (fileChange) => fileChange.eventId === event.id
+  );
+
+  return {
+    eventId: event.id,
+    projectName: getProjectById(snapshot, event.projectId)?.name ?? "Unknown project",
+    summary: event.summary,
+    category: event.category,
+    eventType: event.eventType,
+    originLabel: formatTitleCase(event.originType),
+    nodeCategory: event.nodeCategory,
+    fileChangeLabel:
+      linkedFileChanges.length > 0
+        ? pluralize(linkedFileChanges.length, "file change")
+        : "No file changes",
+    timestampLabel: formatTimestampLabel(event.timestamp),
+    isEmphasized
+  };
+}
+
+function createSessionFileChangeItem(
+  snapshot: SubMindStoreSnapshot,
+  fileChange: FileChange
+): SessionFileChangeItemModel {
+  return {
+    fileChangeId: fileChange.id,
+    path: fileChange.path,
+    changeType: fileChange.changeType,
+    summary: fileChange.summary ?? "No file-change summary recorded.",
+    eventSummary:
+      snapshot.events.find((event) => event.id === fileChange.eventId)?.summary ??
+      "No linked event summary.",
+    languageLabel: fileChange.language ?? fileChange.fileType,
+    updatedAtLabel: formatTimestampLabel(fileChange.updatedAt)
+  };
+}
+
+function createRetainedHistoryItems(events: Event[]): RetainedHistoryItemModel[] {
+  return events
+    .sort((left, right) => compareStrings(right.timestamp, left.timestamp))
+    .slice(0, 6)
+    .map((event, index) => ({
+      eventId: event.id,
+      summary: event.summary,
+      timestampLabel: formatTimestampLabel(event.timestamp),
+      originLabel: formatTitleCase(event.originType),
+      metaLabel: `${formatTitleCase(event.category)} / ${formatTitleCase(
+        event.eventType
+      )}`,
+      isLatest: index === 0
+    }));
+}
+
+function getMemorySupportEvents(
+  snapshot: SubMindStoreSnapshot,
+  memoryItem: MemoryItem
+): Event[] {
+  const sourceEventIds = new Set(memoryItem.sourceEventIds);
+
+  return snapshot.events
+    .filter(
+      (event) => sourceEventIds.has(event.id) || event.memoryItemId === memoryItem.id
+    )
+    .sort((left, right) => compareStrings(right.timestamp, left.timestamp));
+}
+
+function getMemorySupportFiles(
+  snapshot: SubMindStoreSnapshot,
+  memoryItem: MemoryItem
+): FileChange[] {
+  const sourceFileIds = new Set(memoryItem.sourceFileChangeIds);
+
+  for (const event of getMemorySupportEvents(snapshot, memoryItem)) {
+    if (event.fileChangeId) {
+      sourceFileIds.add(event.fileChangeId);
+    }
+  }
+
+  return snapshot.fileChanges
+    .filter((fileChange) => sourceFileIds.has(fileChange.id))
+    .sort((left, right) => compareStrings(right.updatedAt, left.updatedAt));
+}
+
+function getMemoryLinkedContext(
+  snapshot: SubMindStoreSnapshot,
+  memoryItem: MemoryItem
+): SessionContextLinkModel[] {
+  const actions = snapshot.actions
+    .filter((actionItem) => memoryItem.linkedActionItemIds.includes(actionItem.id))
+    .slice(0, 2)
+    .map((actionItem) => ({
+      id: `memory-action:${actionItem.id}`,
+      kind: "action" as const,
+      title: actionItem.title,
+      summary: actionItem.summary ?? actionItem.riskSummary,
+      meta: `${formatTitleCase(actionItem.state)} / ${formatTitleCase(
+        actionItem.riskLevel
+      )}`,
+      tone: getActionTone(actionItem),
+      targetId: actionItem.id
+    }));
+  const guidance = snapshot.guidance
+    .filter((guidanceItem) =>
+      memoryItem.linkedGuidanceItemIds.includes(guidanceItem.id)
+    )
+    .slice(0, 2)
+    .map((guidanceItem) => {
+      const tone: ShellCardModel["tone"] =
+        guidanceItem.state === "injected" ? "plum" : "violet";
+
+      return {
+        id: `memory-guidance:${guidanceItem.id}`,
+        kind: "guidance" as const,
+        title: guidanceItem.title,
+        summary: guidanceItem.summary,
+        meta: `${formatTitleCase(guidanceItem.state)} / ${formatTitleCase(
+          guidanceItem.source
+        )}`,
+        tone,
+        targetId: guidanceItem.id
+      };
+    });
+
+  return [...actions, ...guidance];
 }
 
 function createMemoryView(
   snapshot: SubMindStoreSnapshot,
   state: ShellUiState,
-  activeProject: Project | null
+  activeProject: Project | null,
+  options: ShellViewModelOptions
 ): SubMindShellViewModel["memory"] {
   const memoryPool = activeProject
     ? [
@@ -734,6 +1319,12 @@ function createMemoryView(
       getProjectById(snapshot, memoryItem.projectId ?? "")?.name ?? "Global",
     confidenceLabel: `${Math.round(memoryItem.confidence * 100)}% confidence`,
     freshnessLabel: `${Math.round(memoryItem.freshness * 100)}% fresh`,
+    curationLabel: formatTitleCase(memoryItem.curationState),
+    provenanceLabel: `${pluralize(memoryItem.sourceEventIds.length, "event")} / ${pluralize(
+      memoryItem.sourceFileChangeIds.length,
+      "file"
+    )}`,
+    changeLabel: memoryItem.changeSummary ?? "No recent change summary.",
     isPinned: memoryItem.isPinned,
     isActive: state.activeMemoryId === memoryItem.id,
     isEmphasized: activeProject?.id === memoryItem.projectId
@@ -741,21 +1332,73 @@ function createMemoryView(
 
   const activeMemory =
     memoryPool.find((memoryItem) => memoryItem.id === state.activeMemoryId) ??
-    memoryPool[0];
+    memoryPool[0] ??
+    null;
+  const supportEvents = activeMemory
+    ? getMemorySupportEvents(snapshot, activeMemory)
+    : [];
+  const supportFiles = activeMemory
+    ? getMemorySupportFiles(snapshot, activeMemory)
+    : [];
+  const linkedContext = activeMemory
+    ? getMemoryLinkedContext(snapshot, activeMemory)
+    : [];
+  const historyItems = createRetainedHistoryItems(supportEvents);
 
   return {
     title: "Memory",
     body:
-      "Structured archive with bucket, confidence, freshness, and provenance signals kept close to active work.",
+      "Retained intelligence showing what SubMind knows, how sure it is, how fresh it is, where it came from, and what changed.",
     cards,
-    inspector: createCard(
-      "memory-inspector",
-      "Memory Inspector",
-      activeMemory?.summary ?? "Select a memory item",
-      activeMemory?.content ??
-        "Choose a memory card to inspect its evidence-weighted content and freshness cues.",
-      activeMemory?.status === "stale" ? "amber" : "slate"
-    )
+    inspector: {
+      memoryId: activeMemory?.id ?? null,
+      title: activeMemory?.summary ?? "Select a memory item",
+      content:
+        activeMemory?.content ??
+        "Choose a memory card to inspect retained knowledge, provenance, and recent change posture.",
+      projectName:
+        activeMemory
+          ? getProjectById(snapshot, activeMemory.projectId ?? "")?.name ?? "Global"
+          : "Global",
+      bucketLabel: activeMemory
+        ? formatTitleCase(activeMemory.bucket)
+        : "No bucket selected",
+      statusLabel: activeMemory
+        ? formatTitleCase(activeMemory.status)
+        : "No status",
+      confidenceLabel: activeMemory
+        ? `${Math.round(activeMemory.confidence * 100)}% confidence`
+        : "No confidence signal",
+      freshnessLabel: activeMemory
+        ? `${Math.round(activeMemory.freshness * 100)}% fresh`
+        : "No freshness signal",
+      curationLabel: activeMemory
+        ? formatTitleCase(activeMemory.curationState)
+        : "No curation state",
+      provenanceSummary: activeMemory
+        ? `${pluralize(activeMemory.sourceEventIds.length, "source event")} and ${pluralize(
+            activeMemory.sourceFileChangeIds.length,
+            "source file"
+          )} currently support this memory.`
+        : "No provenance available.",
+      changeSummary:
+        activeMemory?.changeSummary ??
+        "No recent change summary has been recorded for this memory.",
+      linkedContext,
+      sourceEvents: supportEvents.map((event) =>
+        createTraceEventItem(snapshot, event, true)
+      ),
+      sourceFiles: supportFiles.map((fileChange) =>
+        createSessionFileChangeItem(snapshot, fileChange)
+      ),
+      historyItems,
+      isPinned: activeMemory?.isPinned ?? false
+    },
+    draftSummary: options.memorySummaryDraft ?? activeMemory?.summary ?? "",
+    draftContent: options.memoryContentDraft ?? activeMemory?.content ?? "",
+    draftStatus: options.memoryStatusDraft ?? activeMemory?.status ?? "",
+    draftIsPinned: options.memoryPinnedDraft ?? activeMemory?.isPinned ?? false,
+    isMutationPending: options.isMemoryMutationPending ?? false
   };
 }
 
@@ -763,15 +1406,39 @@ function getGuidanceMemoryItems(
   snapshot: SubMindStoreSnapshot,
   guidanceItem: GuidanceItem
 ): MemoryItem[] {
-  return snapshot.memory.filter((memoryItem) =>
-    guidanceItem.linkedMemoryItemIds.includes(memoryItem.id)
-  );
+  if (guidanceItem.linkedMemoryItemIds.length > 0) {
+    return snapshot.memory.filter((memoryItem) =>
+      guidanceItem.linkedMemoryItemIds.includes(memoryItem.id)
+    );
+  }
+
+  return snapshot.memory.filter((memoryItem) => {
+    if (memoryItem.projectId !== guidanceItem.projectId) {
+      return false;
+    }
+
+    if (guidanceItem.threadId && memoryItem.threadId === guidanceItem.threadId) {
+      return true;
+    }
+
+    if (guidanceItem.sessionId && memoryItem.sessionId === guidanceItem.sessionId) {
+      return true;
+    }
+
+    return !guidanceItem.threadId && !guidanceItem.sessionId;
+  });
 }
 
 function getGuidanceActionItems(
   snapshot: SubMindStoreSnapshot,
   guidanceItem: GuidanceItem
 ): ActionItem[] {
+  if (guidanceItem.linkedActionItemIds.length > 0) {
+    return snapshot.actions.filter((actionItem) =>
+      guidanceItem.linkedActionItemIds.includes(actionItem.id)
+    );
+  }
+
   return snapshot.actions.filter((actionItem) => {
     if (actionItem.projectId !== guidanceItem.projectId) {
       return false;
@@ -789,29 +1456,25 @@ function getGuidanceActionItems(
   });
 }
 
-function getGuidanceSupportCount(
+function getGuidanceSupportEvents(
   snapshot: SubMindStoreSnapshot,
   guidanceItem: GuidanceItem
-): number {
-  return snapshot.events.filter((event) => {
-    if (event.guidanceItemId === guidanceItem.id) {
-      return true;
-    }
+): Event[] {
+  const linkedEventIds = new Set(guidanceItem.linkedEventIds);
 
-    if (event.projectId !== guidanceItem.projectId) {
+  return snapshot.events
+    .filter((event) => {
+      if (event.guidanceItemId === guidanceItem.id) {
+        return true;
+      }
+
+      if (linkedEventIds.has(event.id)) {
+        return true;
+      }
+
       return false;
-    }
-
-    if (guidanceItem.threadId && event.threadId === guidanceItem.threadId) {
-      return true;
-    }
-
-    if (guidanceItem.sessionId && event.sessionId === guidanceItem.sessionId) {
-      return true;
-    }
-
-    return false;
-  }).length;
+    })
+    .sort((left, right) => compareStrings(right.timestamp, left.timestamp));
 }
 
 function createGuidanceView(
@@ -842,6 +1505,9 @@ function createGuidanceView(
       source: guidanceItem.source,
       projectName:
         getProjectById(snapshot, guidanceItem.projectId)?.name ?? "Unknown project",
+      confidenceLabel: `${Math.round(guidanceItem.confidence * 100)}% confidence`,
+      evidenceLabel: guidanceItem.evidenceSummary,
+      policyLabel: guidanceItem.policySummary,
       linkedMemoryLabel: `${pluralize(linkedMemory.length, "memory ref")}`,
       actionPressureLabel: `${pluralize(relatedActions.length, "related action")}`,
       isActive: state.activeGuidanceId === guidanceItem.id,
@@ -851,42 +1517,49 @@ function createGuidanceView(
 
   const activeGuidance =
     guidancePool.find((guidanceItem) => guidanceItem.id === state.activeGuidanceId) ??
-    guidancePool[0];
+    guidancePool[0] ??
+    null;
   const activeGuidanceMemory = activeGuidance
     ? getGuidanceMemoryItems(snapshot, activeGuidance)
     : [];
   const activeGuidanceActions = activeGuidance
     ? getGuidanceActionItems(snapshot, activeGuidance)
     : [];
-  const activeGuidanceSupportCount = activeGuidance
-    ? getGuidanceSupportCount(snapshot, activeGuidance)
-    : 0;
-  const activeGuidanceTone = activeGuidanceActions.some((actionItem) =>
-    ["high", "critical"].includes(actionItem.riskLevel)
-  )
-    ? "amber"
-    : activeGuidance?.state === "injected"
-      ? "plum"
-      : "violet";
-  const linkedMemorySummary =
-    activeGuidanceMemory.length > 0
-      ? activeGuidanceMemory
-          .slice(0, 2)
-          .map((memoryItem) => memoryItem.summary)
-          .join(" / ")
-      : "No linked memory";
-  const relatedActionSummary =
-    activeGuidanceActions.length > 0
-      ? activeGuidanceActions
-          .slice(0, 2)
-          .map((actionItem) => actionItem.title)
-          .join(" / ")
-      : "No related actions";
+  const activeGuidanceEvents = activeGuidance
+    ? getGuidanceSupportEvents(snapshot, activeGuidance)
+    : [];
+  const linkedContext: SessionContextLinkModel[] = [
+    ...activeGuidanceActions.slice(0, 2).map((actionItem) => ({
+      id: `guidance-action:${actionItem.id}`,
+      kind: "action" as const,
+      title: actionItem.title,
+      summary: actionItem.summary ?? actionItem.riskSummary,
+      meta: `${formatTitleCase(actionItem.state)} / ${formatTitleCase(actionItem.riskLevel)}`,
+      tone: getActionTone(actionItem),
+      targetId: actionItem.id
+    })),
+    ...activeGuidanceMemory.slice(0, 2).map((memoryItem) => {
+      const tone: ShellCardModel["tone"] =
+        memoryItem.status === "stale" ? "amber" : "slate";
+
+      return {
+        id: `guidance-memory:${memoryItem.id}`,
+        kind: "memory" as const,
+        title: memoryItem.summary,
+        summary: memoryItem.changeSummary ?? memoryItem.content,
+        meta: `${formatTitleCase(memoryItem.status)} / ${Math.round(
+          memoryItem.confidence * 100
+        )}% confidence`,
+        tone,
+        targetId: memoryItem.id
+      };
+    })
+  ];
 
   return {
     title: "Guidance",
     body:
-      "Checkpoint-driven intervention surface showing posture, evidence links, and adjacent action pressure.",
+      "Transparent intervention surface showing what SubMind recommended, why it recommended it, what evidence supported it, and which memory/action context shaped the decision.",
     posture: createCard(
       "guidance-posture",
       "Guidance Checkpoint",
@@ -901,18 +1574,40 @@ function createGuidanceView(
           : "violet"
     ),
     cards,
-    inspector: createCard(
-      "guidance-inspector",
-      "Decision Inspector",
-      activeGuidance?.title ?? "Select guidance",
-      activeGuidance
-        ? `${activeGuidance.summary} ${activeGuidance.rationale} Linked memory: ${linkedMemorySummary}. Related actions: ${relatedActionSummary}. Support: ${pluralize(
-            activeGuidanceSupportCount,
-            "event"
-          )}.`
-        : "Choose a guidance package to inspect its rationale and source posture.",
-      activeGuidanceTone
-    )
+    inspector: {
+      guidanceId: activeGuidance?.id ?? null,
+      title: activeGuidance?.title ?? "Select guidance",
+      summary:
+        activeGuidance?.summary ??
+        "Choose a guidance package to inspect recommendation truth and linked evidence.",
+      rationale:
+        activeGuidance?.rationale ??
+        "Rationale appears once a guidance package is selected.",
+      projectName:
+        activeGuidance
+          ? getProjectById(snapshot, activeGuidance.projectId)?.name ?? "Unknown project"
+          : "Unknown project",
+      stateLabel: activeGuidance
+        ? formatTitleCase(activeGuidance.state)
+        : "No state",
+      sourceLabel: activeGuidance
+        ? formatTitleCase(activeGuidance.source)
+        : "No source",
+      confidenceLabel: activeGuidance
+        ? `${Math.round(activeGuidance.confidence * 100)}% confidence`
+        : "No confidence signal",
+      evidenceSummary:
+        activeGuidance?.evidenceSummary ??
+        "No evidence summary available yet.",
+      policySummary:
+        activeGuidance?.policySummary ??
+        "No policy summary available yet.",
+      linkedContext,
+      evidenceEvents: activeGuidanceEvents.map((event) =>
+        createTraceEventItem(snapshot, event, true)
+      ),
+      historyItems: createRetainedHistoryItems(activeGuidanceEvents)
+    }
   };
 }
 
@@ -1051,10 +1746,99 @@ function getActionTone(actionItem: ActionItem | undefined): ShellCardModel["tone
   return "slate";
 }
 
+function getActionTransitionControls(
+  actionItem: ActionItem | undefined,
+  isMutationPending: boolean
+): ActionTransitionControlModel[] {
+  if (!actionItem) {
+    return [];
+  }
+
+  const controls: ActionTransitionState[] = [];
+
+  if (actionItem.state === "pending") {
+    controls.push("approved", "rejected", "blocked");
+  } else if (actionItem.state === "in_progress") {
+    controls.push("approved", "blocked", "resolved", "rejected");
+  } else if (actionItem.state === "approved") {
+    controls.push("resolved", "blocked", "rejected");
+  } else if (actionItem.state === "blocked") {
+    controls.push("approved", "resolved", "rejected");
+  }
+
+  return controls.map((nextState) => ({
+    nextState,
+    label: formatTitleCase(nextState),
+    tone:
+      nextState === "approved"
+        ? "plum"
+        : nextState === "blocked"
+          ? "violet"
+          : nextState === "rejected"
+            ? "amber"
+            : "slate",
+    description:
+      nextState === "approved"
+        ? "Confirm the plan and keep the loop moving."
+        : nextState === "blocked"
+          ? "Pause execution until the missing condition is resolved."
+          : nextState === "rejected"
+            ? "Stop the action and record why it should not proceed."
+            : "Close the loop once the real outcome matches intent.",
+    isDisabled: isMutationPending
+  }));
+}
+
+function getActionHistoryItems(
+  snapshot: SubMindStoreSnapshot,
+  actionItem: ActionItem | undefined
+): ActionHistoryItemModel[] {
+  if (!actionItem) {
+    return [];
+  }
+
+  return snapshot.events
+    .filter(
+      (event) =>
+        event.actionItemId === actionItem.id &&
+        event.eventType === "action-state-transition"
+    )
+    .sort((left, right) => compareStrings(right.timestamp, left.timestamp))
+    .map((event, index) => {
+      const previousState =
+        typeof event.metadata.previousState === "string"
+          ? event.metadata.previousState
+          : null;
+      const nextState =
+        typeof event.metadata.nextState === "string"
+          ? event.metadata.nextState
+          : null;
+      const actor =
+        typeof event.metadata.actor === "string"
+          ? event.metadata.actor
+          : event.originType;
+
+      return {
+        eventId: event.id,
+        summary: event.summary,
+        timestampLabel: formatTimestampLabel(event.timestamp),
+        actorLabel: formatTitleCase(actor),
+        transitionLabel:
+          previousState && nextState
+            ? `${formatTitleCase(previousState)} -> ${formatTitleCase(nextState)}`
+            : nextState
+              ? formatTitleCase(nextState)
+              : formatTitleCase(event.eventType),
+        isLatest: index === 0
+      };
+    });
+}
+
 function createActionsView(
   snapshot: SubMindStoreSnapshot,
   state: ShellUiState,
-  activeProject: Project | null
+  activeProject: Project | null,
+  options: ShellViewModelOptions
 ): SubMindShellViewModel["actions"] {
   const actionCheckpoint = createActionCheckpointSummary(
     snapshot,
@@ -1153,6 +1937,14 @@ function createActionsView(
     .filter(Boolean)
     .join(". ");
   const activeActionTone = getActionTone(activeAction);
+  const isMutationPending = options.isActionMutationPending ?? false;
+  const transitionControls = getActionTransitionControls(
+    activeAction,
+    isMutationPending
+  );
+  const historyItems = getActionHistoryItems(snapshot, activeAction);
+  const actualOutcome =
+    options.actionOutcomeDraft ?? activeAction?.actualOutcome ?? "";
 
   return {
     title: "Actions",
@@ -1176,6 +1968,7 @@ function createActionsView(
           : "slate"
     ),
     cards,
+    activeActionId: activeAction?.id ?? null,
     mainView: createCard(
       "action-main-view",
       "Action Main View",
@@ -1189,6 +1982,16 @@ function createActionsView(
         : "Choose an action to promote it into the main control surface.",
       activeActionTone
     ),
+    expectedOutcome:
+      activeAction?.expectedOutcome ?? "No expected outcome recorded yet.",
+    actualOutcome,
+    actualOutcomePlaceholder: activeAction
+      ? "Record what actually happened, variance from expectation, or the operator's final note."
+      : "Select an action to capture actual outcome.",
+    transitionControls,
+    historyItems,
+    isMutationPending,
+    pendingActionTransition: options.pendingActionTransition ?? null,
     inspector: createCard(
       "action-inspector",
       "Audit / Context Inspector",
@@ -1214,7 +2017,8 @@ function createActionsView(
 
 export function createShellViewModel(
   snapshot: SubMindStoreSnapshot,
-  state: ShellUiState
+  state: ShellUiState,
+  options: ShellViewModelOptions = {}
 ): SubMindShellViewModel {
   const activeProject = getProjectById(snapshot, getActiveProjectId(state) ?? "");
   const scope = getShellScope(state);
@@ -1288,8 +2092,8 @@ export function createShellViewModel(
     },
     dashboard: createDashboardView(snapshot, state, activeProject),
     sessions: createSessionsView(snapshot, state, activeProject),
-    memory: createMemoryView(snapshot, state, activeProject),
+    memory: createMemoryView(snapshot, state, activeProject, options),
     guidance: createGuidanceView(snapshot, state, activeProject),
-    actions: createActionsView(snapshot, state, activeProject)
+    actions: createActionsView(snapshot, state, activeProject, options)
   };
 }

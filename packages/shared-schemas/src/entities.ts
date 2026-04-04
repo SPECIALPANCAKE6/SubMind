@@ -128,6 +128,12 @@ export interface MemoryItem extends BaseEntity {
   content: string;
   confidence: number;
   freshness: number;
+  curationState: "derived" | "confirmed" | "edited";
+  sourceEventIds: string[];
+  sourceFileChangeIds: string[];
+  linkedActionItemIds: string[];
+  linkedGuidanceItemIds: string[];
+  changeSummary?: string;
   isPinned: boolean;
   isEdited: boolean;
 }
@@ -142,7 +148,12 @@ export interface GuidanceItem extends BaseEntity {
   rationale: string;
   state: "candidate" | "injected" | "suggested" | "suppressed" | "resolved";
   source: "operator" | "policy" | "system" | "model";
+  confidence: number;
+  evidenceSummary: string;
+  policySummary: string;
   linkedMemoryItemIds: string[];
+  linkedEventIds: string[];
+  linkedActionItemIds: string[];
 }
 
 export interface ActionItem extends BaseEntity {
