@@ -188,6 +188,62 @@ describe("ui-components", () => {
     expect(markup).toContain("Decision Inspector");
     expect(markup).toContain("Evidence Events");
     expect(markup).toContain("Guidance History");
+    expect(markup).toContain("SubMind Context Supplied");
+    expect(markup).toContain("No supply recorded");
+  });
+
+  it("renders the exact supplied context and source identities from audit provenance", () => {
+    const snapshot = createPreviewStoreSnapshot();
+    snapshot.events.unshift({
+      ...snapshot.events[0]!,
+      id: "event-context-supplied-test",
+      projectId: "project-submind",
+      threadId: "thread-submind-migration",
+      eventType: "context_bundle_supplied",
+      category: "guidance",
+      nodeCategory: "cognitive",
+      timestamp: "2026-07-03T15:00:00.000Z",
+      summary: "SubMind supplied one context data point for SubMind.",
+      metadata: {
+        bundleId: "context-bundle-test",
+        rankingMode: "deterministic_fallback",
+        estimatedTokens: 42,
+        omittedCount: 0,
+        composedContext: "Exact context supplied to Codex.",
+        suppliedItems: [
+          {
+            id: "context-memory-test",
+            kind: "memory",
+            title: "Architecture boundary",
+            content: "Keep the desktop shell thin.",
+            relevanceScore: 0.94,
+            relevanceRationale: "Directly constrains the requested implementation.",
+            sources: [
+              {
+                entityType: "MemoryItem",
+                entityId: "memory-submind-architecture",
+                label: "Architecture boundary"
+              }
+            ]
+          }
+        ]
+      }
+    });
+    const markup = renderToStaticMarkup(
+      createElement(SubMindShell, {
+        viewModel: createShellViewModel(
+          snapshot,
+          setShellPrimaryScreen(createInitialShellUiState(snapshot), "guidance")
+        ),
+        actions: noopActions
+      })
+    );
+
+    expect(markup).toContain("Exact Composed Context");
+    expect(markup).toContain("Exact context supplied to Codex.");
+    expect(markup).toContain("Architecture boundary");
+    expect(markup).toContain("MemoryItem:memory-submind-architecture");
+    expect(markup).toContain("Deterministic Fallback");
   });
 
   it("renders retained memory inspector, curation controls, and provenance surfaces", () => {

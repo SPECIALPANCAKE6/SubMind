@@ -12,6 +12,7 @@
     }
   },
   "dependencies": {
+    "@submind/policy": "workspace:*",
     "@submind/store": "workspace:*",
     "@submind/shared-schemas": "workspace:*"
   }

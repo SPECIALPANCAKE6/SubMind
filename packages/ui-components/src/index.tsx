@@ -1663,6 +1663,103 @@ function renderGuidance(
             ))}
           </div>
         </article>
+
+        <Surface variant="elevated" className="sm-context-supply">
+          <div className="sm-context-supply__header">
+            <div className="grid gap-1">
+              <p className="sm-label">Context Provenance</p>
+              <h3 className="sm-display text-lg text-[var(--sm-text-strong)]">
+                SubMind Context Supplied
+              </h3>
+            </div>
+            <span
+              className={cx(
+                "sm-chip",
+                viewModel.guidance.suppliedContext.hasSupply
+                  ? "sm-chip--status"
+                  : "sm-chip--subtle"
+              )}
+            >
+              {viewModel.guidance.suppliedContext.hasSupply
+                ? "Supplied"
+                : "No supply recorded"}
+            </span>
+          </div>
+
+          {viewModel.guidance.suppliedContext.hasSupply ? (
+            <>
+              <dl className="sm-context-supply__meta">
+                <div>
+                  <dt>Project</dt>
+                  <dd>{protectedText(viewModel.guidance.suppliedContext.projectName)}</dd>
+                </div>
+                <div>
+                  <dt>Thread</dt>
+                  <dd>{protectedText(viewModel.guidance.suppliedContext.threadLabel)}</dd>
+                </div>
+                <div>
+                  <dt>Ranking</dt>
+                  <dd>{protectedText(viewModel.guidance.suppliedContext.rankingLabel)}</dd>
+                </div>
+                <div>
+                  <dt>Provider</dt>
+                  <dd>{protectedText(viewModel.guidance.suppliedContext.modelLabel)}</dd>
+                </div>
+              </dl>
+              <div className="sm-context-supply__composition">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="sm-label">Exact Composed Context</span>
+                  <span className="text-xs text-[var(--sm-text-muted)]">
+                    {protectedText(viewModel.guidance.suppliedContext.tokenLabel)} /{" "}
+                    {protectedText(viewModel.guidance.suppliedContext.timestampLabel)}
+                  </span>
+                </div>
+                <pre>{protectedText(viewModel.guidance.suppliedContext.composedContext)}</pre>
+              </div>
+              <div className="sm-context-supply__items">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="sm-label">Supplied Data Points</span>
+                  <span className="sm-chip sm-chip--subtle">
+                    {viewModel.guidance.suppliedContext.items.length} items
+                  </span>
+                </div>
+                {viewModel.guidance.suppliedContext.items.map((item) => (
+                  <section key={item.datumId} className="sm-context-supply__item">
+                    <div className="sm-context-supply__item-heading">
+                      <div>
+                        <span className="sm-context-supply__kind">
+                          {protectedText(item.kind)}
+                        </span>
+                        <h4>{protectedText(item.title)}</h4>
+                      </div>
+                      <span>{protectedText(item.relevanceLabel)}</span>
+                    </div>
+                    <p>{protectedText(item.content)}</p>
+                    <p className="sm-context-supply__rationale">
+                      {protectedText(item.rationale)}
+                    </p>
+                    <div className="sm-context-supply__sources" aria-label="Datum sources">
+                      {item.sources.map((source) => (
+                        <code key={`${item.datumId}:${source.entityType}:${source.entityId}`}>
+                          {protectedText(`${source.entityType}:${source.entityId}`)}
+                        </code>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+              <p className="sm-context-supply__footer">
+                {protectedText(viewModel.guidance.suppliedContext.omittedLabel)} / Audit{" "}
+                {protectedText(viewModel.guidance.suppliedContext.eventId ?? "unavailable")}
+              </p>
+            </>
+          ) : (
+            <p className="sm-copy text-sm leading-7 text-[var(--sm-text-muted)]">
+              No context bundle has been supplied in this scope. Successful API requests
+              appear here with their exact redacted payload and source identities.
+            </p>
+          )}
+        </Surface>
       </div>
 
       <div className="sm-guidance-inspector-stack">

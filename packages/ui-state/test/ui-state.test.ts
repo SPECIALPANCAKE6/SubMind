@@ -324,6 +324,59 @@ describe("ui-state", () => {
     );
   });
 
+  it("derives exact context supply provenance from the latest audit event", () => {
+    const snapshot = createPreviewStoreSnapshot();
+    snapshot.events.unshift({
+      ...snapshot.events[0]!,
+      id: "event-context-supplied-test",
+      projectId: "project-submind",
+      threadId: "thread-submind-migration",
+      eventType: "context_bundle_supplied",
+      category: "guidance",
+      nodeCategory: "cognitive",
+      timestamp: "2026-07-03T15:00:00.000Z",
+      summary: "SubMind supplied one context data point for SubMind.",
+      metadata: {
+        bundleId: "context-bundle-test",
+        rankingMode: "model",
+        model: "test-context-ranker",
+        estimatedTokens: 42,
+        omittedCount: 3,
+        composedContext: "Exact context supplied to the requesting software.",
+        suppliedItems: [
+          {
+            id: "context-memory-test",
+            kind: "memory",
+            title: "Architecture boundary",
+            content: "Keep the desktop shell thin.",
+            relevanceScore: 0.94,
+            relevanceRationale: "Directly constrains the requested implementation.",
+            sources: [
+              {
+                entityType: "MemoryItem",
+                entityId: "memory-submind-architecture",
+                label: "Architecture boundary"
+              }
+            ]
+          }
+        ]
+      }
+    });
+    const viewModel = createShellViewModel(
+      snapshot,
+      setShellPrimaryScreen(createInitialShellUiState(snapshot), "guidance")
+    );
+
+    expect(viewModel.guidance.suppliedContext.hasSupply).toBe(true);
+    expect(viewModel.guidance.suppliedContext.bundleId).toBe("context-bundle-test");
+    expect(viewModel.guidance.suppliedContext.modelLabel).toBe("test-context-ranker");
+    expect(viewModel.guidance.suppliedContext.composedContext).toContain("Exact context");
+    expect(viewModel.guidance.suppliedContext.items[0]?.sources[0]).toMatchObject({
+      entityType: "MemoryItem",
+      entityId: "memory-submind-architecture"
+    });
+  });
+
   it("redacts protected values by default and only reveals the selected visible fingerprint temporarily", () => {
     const memorySecret = "sm_MEMORYTOKENabcdefghijklmnopqrstuvwxyz123456";
     const eventSecret = "sm_EVENTTOKENabcdefghijklmnopqrstuvwxyz123456";

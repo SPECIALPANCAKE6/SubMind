@@ -179,6 +179,10 @@ function fingerprintSensitiveValue(value: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+export function fingerprintText(value: string): string {
+  return fingerprintSensitiveValue(value);
+}
+
 function mergeFindings(findings: SensitiveFinding[]): SensitiveFinding[] {
   const sorted = [...findings].sort((left, right) =>
     left.start - right.start || right.end - left.end

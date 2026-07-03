@@ -1,6 +1,6 @@
 use chrono::SecondsFormat;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row, SqlitePool};
@@ -14,15 +14,28 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
 const DEFAULT_API_PORT: u16 = 47821;
-const MAX_REQUEST_BYTES: usize = 16 * 1024;
+const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_PROJECT_LIST_LIMIT: usize = 100;
 const MIN_TOKEN_LENGTH: usize = 32;
+const DEFAULT_CONTEXT_MAX_ITEMS: usize = 8;
+const MAX_CONTEXT_ITEMS: usize = 20;
+const DEFAULT_CONTEXT_MAX_TOKENS: usize = 1_200;
+const MAX_CONTEXT_TOKENS: usize = 4_000;
+const MAX_CONTEXT_CANDIDATES: usize = 40;
+
+#[derive(Clone)]
+struct ContextModelConfig {
+    endpoint: String,
+    model: String,
+    token: Option<String>,
+}
 
 #[derive(Clone)]
 struct ExternalApiConfig {
     bind_addr: SocketAddr,
     token: String,
     db_path: PathBuf,
+    context_model: Option<ContextModelConfig>,
 }
 
 #[derive(Debug)]
@@ -30,6 +43,94 @@ struct HttpRequest {
     method: String,
     target: String,
     headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextRequest {
+    project_id: Option<String>,
+    project_query: Option<String>,
+    thread_id: Option<String>,
+    prompt: String,
+    max_items: Option<usize>,
+    max_tokens: Option<usize>,
+    kinds: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ContextSourceReference {
+    entity_type: String,
+    entity_id: String,
+    label: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ContextDatum {
+    id: String,
+    kind: String,
+    project_id: String,
+    thread_id: Option<String>,
+    title: String,
+    content: String,
+    confidence: f64,
+    freshness: f64,
+    sensitivity: String,
+    deterministic_score: f64,
+    relevance_score: f64,
+    relevance_rationale: String,
+    estimated_tokens: usize,
+    sources: Vec<ContextSourceReference>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextPromptSummary {
+    fingerprint: String,
+    summary: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextLimits {
+    max_items: usize,
+    max_tokens: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextBundle {
+    kind: &'static str,
+    api_version: &'static str,
+    bundle_id: String,
+    generated_at: String,
+    project: ApiProject,
+    thread_id: Option<String>,
+    prompt: ContextPromptSummary,
+    limits: ContextLimits,
+    ranking: Value,
+    items: Vec<ContextDatum>,
+    composed_context: String,
+    estimated_tokens: usize,
+    omitted_count: usize,
+    audit_event_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelContextSelection {
+    datum_id: String,
+    relevance_score: f64,
+    rationale: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelContextResult {
+    selections: Vec<ModelContextSelection>,
+    composed_context: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -296,12 +397,59 @@ fn resolve_external_api_config(app: &AppHandle) -> Option<ExternalApiConfig> {
                 .ok()
                 .map(|path| path.join("submind.db"))
         })?;
+    let context_model = match resolve_context_model_config() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!(
+                "SubMind context model is disabled: {}",
+                redact_sensitive_text(&error)
+            );
+            None
+        }
+    };
 
     Some(ExternalApiConfig {
         bind_addr,
         token,
         db_path,
+        context_model,
     })
+}
+
+fn resolve_context_model_config() -> Result<Option<ContextModelConfig>, String> {
+    let endpoint = match env::var("SUBMIND_CONTEXT_MODEL_URL") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return Ok(None),
+    };
+    let model = env::var("SUBMIND_CONTEXT_MODEL")
+        .map_err(|_| "SUBMIND_CONTEXT_MODEL is required when a model URL is set".to_string())?;
+    let parsed = reqwest::Url::parse(&endpoint)
+        .map_err(|_| "SUBMIND_CONTEXT_MODEL_URL is not a valid URL".to_string())?;
+
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("SUBMIND_CONTEXT_MODEL_URL must use HTTP or HTTPS".to_string());
+    }
+
+    let is_loopback = parsed
+        .host_str()
+        .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+        .map(|address| address.is_loopback())
+        .unwrap_or_else(|| parsed.host_str() == Some("localhost"));
+    let allow_remote = env::var("SUBMIND_CONTEXT_MODEL_ALLOW_REMOTE")
+        .map(|value| value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if !is_loopback && !allow_remote {
+        return Err(
+            "remote context models require SUBMIND_CONTEXT_MODEL_ALLOW_REMOTE=true".to_string(),
+        );
+    }
+
+    Ok(Some(ContextModelConfig {
+        endpoint,
+        model,
+        token: env::var("SUBMIND_CONTEXT_MODEL_TOKEN").ok(),
+    }))
 }
 
 fn run_external_api_server(config: ExternalApiConfig) -> Result<(), String> {
@@ -363,20 +511,29 @@ fn handle_connection(mut stream: TcpStream, config: ExternalApiConfig) -> Result
 }
 
 fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
-    let mut buffer = [0u8; MAX_REQUEST_BYTES];
-    let byte_count = stream
-        .read(&mut buffer)
-        .map_err(|error| format!("failed to read request: {error}"))?;
+    let mut received = Vec::new();
+    let header_end = loop {
+        let mut chunk = [0u8; 4 * 1024];
+        let byte_count = stream
+            .read(&mut chunk)
+            .map_err(|error| format!("failed to read request: {error}"))?;
 
-    if byte_count == 0 {
-        return Err("empty request".to_string());
-    }
+        if byte_count == 0 {
+            return Err("empty or incomplete request".to_string());
+        }
 
-    let raw = String::from_utf8_lossy(&buffer[..byte_count]);
-    let Some(header_end) = raw.find("\r\n\r\n") else {
-        return Err("request headers were incomplete".to_string());
+        received.extend_from_slice(&chunk[..byte_count]);
+
+        if received.len() > MAX_REQUEST_BYTES {
+            return Err("request exceeded the maximum size".to_string());
+        }
+
+        if let Some(index) = received.windows(4).position(|window| window == b"\r\n\r\n") {
+            break index;
+        }
     };
-    let header_block = &raw[..header_end];
+    let header_block = std::str::from_utf8(&received[..header_end])
+        .map_err(|_| "request headers were not valid UTF-8".to_string())?;
     let mut lines = header_block.lines();
     let request_line = lines
         .next()
@@ -406,10 +563,48 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
         }
     }
 
+    if headers.iter().any(|(name, _)| name == "transfer-encoding") {
+        return Err("transfer-encoded requests are not supported".to_string());
+    }
+
+    let content_length = headers
+        .iter()
+        .find_map(|(name, value)| (name == "content-length").then_some(value))
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| "invalid Content-Length header".to_string())
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let body_start = header_end + 4;
+    let total_length = body_start
+        .checked_add(content_length)
+        .ok_or_else(|| "request size overflowed".to_string())?;
+
+    if total_length > MAX_REQUEST_BYTES {
+        return Err("request exceeded the maximum size".to_string());
+    }
+
+    while received.len() < total_length {
+        let remaining = total_length - received.len();
+        let mut chunk = vec![0u8; remaining.min(4 * 1024)];
+        let byte_count = stream
+            .read(&mut chunk)
+            .map_err(|error| format!("failed to read request body: {error}"))?;
+
+        if byte_count == 0 {
+            return Err("request body was incomplete".to_string());
+        }
+
+        received.extend_from_slice(&chunk[..byte_count]);
+    }
+
     Ok(HttpRequest {
         method,
         target,
         headers,
+        body: received[body_start..total_length].to_vec(),
     })
 }
 
@@ -420,10 +615,6 @@ struct RouteResponse {
 }
 
 async fn route_request(request: HttpRequest, config: ExternalApiConfig) -> RouteResponse {
-    if request.method != "GET" {
-        return route_error(405, "method_not_allowed", "Only GET is supported.", false);
-    }
-
     if !request_has_valid_token(&request, &config.token) {
         return route_error(
             401,
@@ -435,6 +626,19 @@ async fn route_request(request: HttpRequest, config: ExternalApiConfig) -> Route
 
     let (path, query) = split_target(&request.target);
 
+    if request.method == "POST" && path == "/v1/context-bundle" {
+        return route_context_bundle_request(&request, &config).await;
+    }
+
+    if request.method != "GET" {
+        return route_error(
+            405,
+            "method_not_allowed",
+            "This endpoint does not support that method.",
+            false,
+        );
+    }
+
     match path.as_str() {
         "/v1/health" => RouteResponse {
             status: 200,
@@ -442,7 +646,8 @@ async fn route_request(request: HttpRequest, config: ExternalApiConfig) -> Route
               "status": "ok",
               "apiVersion": "v1",
               "localOnly": true,
-              "readOnly": true
+              "projectDataReadOnly": true,
+              "auditWrites": true
             }),
             authenticate: false,
         },
@@ -515,6 +720,15 @@ async fn route_request(request: HttpRequest, config: ExternalApiConfig) -> Route
             }
         }
     }
+}
+
+fn request_has_json_content_type(request: &HttpRequest) -> bool {
+    request.headers.iter().any(|(name, value)| {
+        name == "content-type"
+            && value.split(';').next().is_some_and(|media_type| {
+                media_type.trim().eq_ignore_ascii_case("application/json")
+            })
+    })
 }
 
 fn route_error(status: u16, code: &str, message: &str, authenticate: bool) -> RouteResponse {
@@ -1288,6 +1502,911 @@ fn parse_value(value: Option<String>) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
+#[derive(Debug)]
+struct NormalizedContextRequest {
+    project_id: Option<String>,
+    project_query: Option<String>,
+    thread_id: Option<String>,
+    prompt: String,
+    max_items: usize,
+    max_tokens: usize,
+    kinds: Vec<String>,
+}
+
+#[derive(Debug)]
+struct ContextDatumDraft {
+    id: String,
+    kind: String,
+    project_id: String,
+    thread_id: Option<String>,
+    title: String,
+    content: String,
+    confidence: f64,
+    freshness: f64,
+    base_score: f64,
+    sources: Vec<ContextSourceReference>,
+}
+
+async fn route_context_bundle_request(
+    request: &HttpRequest,
+    config: &ExternalApiConfig,
+) -> RouteResponse {
+    if !request_has_json_content_type(request) {
+        return route_error(
+            400,
+            "invalid_content_type",
+            "Content-Type must be application/json.",
+            false,
+        );
+    }
+
+    let parsed = match serde_json::from_slice::<ContextRequest>(&request.body) {
+        Ok(value) => value,
+        Err(_) => {
+            return route_error(
+                400,
+                "invalid_request",
+                "The context request is not valid JSON.",
+                false,
+            )
+        }
+    };
+    let normalized = match normalize_context_request(parsed) {
+        Ok(value) => value,
+        Err(message) => return route_error(400, "invalid_request", &message, false),
+    };
+    let snapshot = match read_api_snapshot(&config.db_path).await {
+        Ok(value) => value,
+        Err(error) => return route_read_error(error),
+    };
+    let project = match resolve_context_project(&snapshot, &normalized) {
+        Some(value) => value,
+        None => {
+            return route_error(
+                404,
+                "project_not_found",
+                "No matching project was found.",
+                false,
+            )
+        }
+    };
+
+    if normalized.thread_id.as_deref().is_some_and(|thread_id| {
+        !snapshot
+            .threads
+            .iter()
+            .any(|thread| thread.id == thread_id && thread.project_id == project.id)
+    }) {
+        return route_error(
+            400,
+            "invalid_thread_scope",
+            "The requested thread does not belong to the project.",
+            false,
+        );
+    }
+
+    let bundle = create_context_bundle(
+        &snapshot,
+        project,
+        &normalized,
+        config.context_model.as_ref(),
+    )
+    .await;
+
+    if let Err(error) = write_context_audit_event(&config.db_path, &snapshot, &bundle).await {
+        eprintln!(
+            "SubMind context audit write failed: {}",
+            redact_sensitive_text(&error)
+        );
+        return route_error(
+            500,
+            "audit_write_failed",
+            "SubMind could not record the context supply audit event.",
+            false,
+        );
+    }
+
+    RouteResponse {
+        status: 200,
+        body: json!(bundle),
+        authenticate: false,
+    }
+}
+
+fn normalize_context_request(request: ContextRequest) -> Result<NormalizedContextRequest, String> {
+    let prompt = request.prompt.trim().to_string();
+
+    if prompt.is_empty() {
+        return Err("prompt is required".to_string());
+    }
+
+    if prompt.chars().count() > 8_000 {
+        return Err("prompt must be 8,000 characters or fewer".to_string());
+    }
+
+    let project_id = request.project_id.filter(|value| !value.trim().is_empty());
+    let project_query = request
+        .project_query
+        .filter(|value| !value.trim().is_empty());
+
+    if project_id.is_none() && project_query.is_none() {
+        return Err("projectId or projectQuery is required".to_string());
+    }
+
+    let supported = [
+        "project_context",
+        "memory",
+        "guidance",
+        "recent_change",
+        "pending_action",
+    ];
+    let mut kinds = request
+        .kinds
+        .unwrap_or_else(|| supported.iter().map(|value| value.to_string()).collect());
+    kinds.sort();
+    kinds.dedup();
+
+    if kinds.is_empty() || kinds.iter().any(|kind| !supported.contains(&kind.as_str())) {
+        return Err("kinds contains an unsupported context datum kind".to_string());
+    }
+
+    Ok(NormalizedContextRequest {
+        project_id,
+        project_query,
+        thread_id: request.thread_id.filter(|value| !value.trim().is_empty()),
+        prompt,
+        max_items: request
+            .max_items
+            .unwrap_or(DEFAULT_CONTEXT_MAX_ITEMS)
+            .clamp(1, MAX_CONTEXT_ITEMS),
+        max_tokens: request
+            .max_tokens
+            .unwrap_or(DEFAULT_CONTEXT_MAX_TOKENS)
+            .clamp(100, MAX_CONTEXT_TOKENS),
+        kinds,
+    })
+}
+
+fn resolve_context_project<'a>(
+    snapshot: &'a ApiSnapshot,
+    request: &NormalizedContextRequest,
+) -> Option<&'a ApiProject> {
+    if let Some(project_id) = request.project_id.as_deref() {
+        return snapshot
+            .projects
+            .iter()
+            .find(|project| project.id == project_id);
+    }
+
+    let query = request.project_query.as_deref()?;
+    let normalized = normalize_search_value(query);
+
+    snapshot
+        .projects
+        .iter()
+        .find(|project| {
+            normalize_search_value(&project.id) == normalized
+                || normalize_search_value(&project.name) == normalized
+                || project
+                    .workspace_path
+                    .as_deref()
+                    .map(normalize_search_value)
+                    .as_deref()
+                    == Some(normalized.as_str())
+        })
+        .or_else(|| {
+            snapshot
+                .projects
+                .iter()
+                .find(|project| project_matches_query(project, Some(query)))
+        })
+}
+
+fn context_kind_enabled(request: &NormalizedContextRequest, kind: &str) -> bool {
+    request.kinds.iter().any(|candidate| candidate == kind)
+}
+
+fn context_tokens(value: &str) -> Vec<String> {
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .map(str::to_ascii_lowercase)
+        .filter(|token| token.len() > 2)
+        .collect()
+}
+
+fn context_keyword_score(prompt_tokens: &[String], title: &str, content: &str) -> f64 {
+    if prompt_tokens.is_empty() {
+        return 0.0;
+    }
+
+    let haystack = context_tokens(&format!("{title} {content}"));
+    let matches = prompt_tokens
+        .iter()
+        .filter(|token| haystack.iter().any(|candidate| candidate == *token))
+        .count();
+
+    (matches as f64 / prompt_tokens.len() as f64).min(1.0)
+}
+
+fn context_freshness(timestamp: &str, now: chrono::DateTime<chrono::Utc>) -> f64 {
+    let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp) else {
+        return 0.5;
+    };
+    let age_days = now
+        .signed_duration_since(parsed.with_timezone(&chrono::Utc))
+        .num_hours()
+        .max(0) as f64
+        / 24.0;
+
+    (1.0 - age_days / 90.0).clamp(0.05, 1.0)
+}
+
+fn estimate_context_tokens(value: &str) -> usize {
+    ((value.chars().count() + 3) / 4).max(1)
+}
+
+fn create_context_datum(
+    draft: ContextDatumDraft,
+    prompt_tokens: &[String],
+    requested_thread_id: Option<&str>,
+) -> ContextDatum {
+    let redacted_title = redact_sensitive_text(&draft.title);
+    let redacted_content = redact_sensitive_text(&draft.content);
+    let was_redacted = redacted_title != draft.title || redacted_content != draft.content;
+    let keyword_score = context_keyword_score(prompt_tokens, &redacted_title, &redacted_content);
+    let thread_boost = requested_thread_id
+        .zip(draft.thread_id.as_deref())
+        .map(|(requested, candidate)| if requested == candidate { 0.18 } else { 0.0 })
+        .unwrap_or(0.0);
+    let score = (draft.base_score + keyword_score * 0.28 + thread_boost).clamp(0.0, 1.0);
+
+    ContextDatum {
+        id: draft.id,
+        kind: draft.kind,
+        project_id: draft.project_id,
+        thread_id: draft.thread_id,
+        title: redacted_title,
+        content: redacted_content.clone(),
+        confidence: draft.confidence.clamp(0.0, 1.0),
+        freshness: draft.freshness.clamp(0.0, 1.0),
+        sensitivity: if was_redacted {
+            "protected_redacted".to_string()
+        } else {
+            "normal".to_string()
+        },
+        deterministic_score: score,
+        relevance_score: score,
+        relevance_rationale:
+            "Selected by deterministic project, state, recency, and prompt relevance rules."
+                .to_string(),
+        estimated_tokens: estimate_context_tokens(&format!("{} {redacted_content}", draft.title)),
+        sources: draft
+            .sources
+            .into_iter()
+            .map(|source| ContextSourceReference {
+                label: redact_sensitive_text(&source.label),
+                ..source
+            })
+            .collect(),
+    }
+}
+
+fn create_context_candidates(
+    snapshot: &ApiSnapshot,
+    project: &ApiProject,
+    request: &NormalizedContextRequest,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<ContextDatum> {
+    let prompt_tokens = context_tokens(&request.prompt);
+    let mut candidates = Vec::new();
+
+    if context_kind_enabled(request, "project_context") {
+        let content = [
+            project.description.as_deref().unwrap_or_default(),
+            project.summary.as_deref().unwrap_or_default(),
+            &project.descriptors.join(", "),
+        ]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+        candidates.push(create_context_datum(
+            ContextDatumDraft {
+                id: format!("context-project-{}", project.id),
+                kind: "project_context".to_string(),
+                project_id: project.id.clone(),
+                thread_id: None,
+                title: project.name.clone(),
+                content,
+                confidence: 1.0,
+                freshness: context_freshness(&project.updated_at, now),
+                base_score: 0.55,
+                sources: vec![ContextSourceReference {
+                    entity_type: "Project".to_string(),
+                    entity_id: project.id.clone(),
+                    label: project.name.clone(),
+                }],
+            },
+            &prompt_tokens,
+            request.thread_id.as_deref(),
+        ));
+    }
+
+    if context_kind_enabled(request, "memory") {
+        for item in snapshot.memory.iter().filter(|item| {
+            (item.project_id.as_deref() == Some(project.id.as_str()) || item.project_id.is_none())
+                && !matches!(
+                    item.status.as_str(),
+                    "archived" | "superseded" | "draft/speculative"
+                )
+        }) {
+            let curation_boost = if matches!(item.curation_state.as_str(), "confirmed" | "edited") {
+                0.08
+            } else {
+                0.0
+            };
+            let pinned_boost = if item.is_pinned { 0.08 } else { 0.0 };
+            let mut sources = vec![ContextSourceReference {
+                entity_type: "MemoryItem".to_string(),
+                entity_id: item.id.clone(),
+                label: item.summary.clone(),
+            }];
+            sources.extend(
+                item.source_event_ids
+                    .iter()
+                    .map(|id| ContextSourceReference {
+                        entity_type: "Event".to_string(),
+                        entity_id: id.clone(),
+                        label: "Memory evidence event".to_string(),
+                    }),
+            );
+            sources.extend(
+                item.source_file_change_ids
+                    .iter()
+                    .map(|id| ContextSourceReference {
+                        entity_type: "FileChange".to_string(),
+                        entity_id: id.clone(),
+                        label: "Memory evidence file".to_string(),
+                    }),
+            );
+            candidates.push(create_context_datum(
+                ContextDatumDraft {
+                    id: format!("context-memory-{}", item.id),
+                    kind: "memory".to_string(),
+                    project_id: project.id.clone(),
+                    thread_id: item.thread_id.clone(),
+                    title: item.summary.clone(),
+                    content: item.content.clone(),
+                    confidence: item.confidence,
+                    freshness: item.freshness,
+                    base_score: 0.28
+                        + item.confidence * 0.14
+                        + item.freshness * 0.12
+                        + curation_boost
+                        + pinned_boost,
+                    sources,
+                },
+                &prompt_tokens,
+                request.thread_id.as_deref(),
+            ));
+        }
+    }
+
+    if context_kind_enabled(request, "guidance") {
+        for item in snapshot.guidance.iter().filter(|item| {
+            item.project_id == project.id
+                && !matches!(item.state.as_str(), "suppressed" | "resolved")
+        }) {
+            let mut sources = vec![ContextSourceReference {
+                entity_type: "GuidanceItem".to_string(),
+                entity_id: item.id.clone(),
+                label: item.title.clone(),
+            }];
+            sources.extend(
+                item.linked_event_ids
+                    .iter()
+                    .map(|id| ContextSourceReference {
+                        entity_type: "Event".to_string(),
+                        entity_id: id.clone(),
+                        label: "Guidance evidence event".to_string(),
+                    }),
+            );
+            candidates.push(create_context_datum(
+                ContextDatumDraft {
+                    id: format!("context-guidance-{}", item.id),
+                    kind: "guidance".to_string(),
+                    project_id: project.id.clone(),
+                    thread_id: item.thread_id.clone(),
+                    title: item.title.clone(),
+                    content: format!("{} {}", item.summary, item.rationale),
+                    confidence: item.confidence,
+                    freshness: context_freshness(&item.updated_at, now),
+                    base_score: 0.34
+                        + item.confidence * 0.16
+                        + if item.state == "injected" { 0.12 } else { 0.05 },
+                    sources,
+                },
+                &prompt_tokens,
+                request.thread_id.as_deref(),
+            ));
+        }
+    }
+
+    if context_kind_enabled(request, "pending_action") {
+        for item in snapshot.actions.iter().filter(|item| {
+            item.project_id == project.id
+                && matches!(item.state.as_str(), "pending" | "in_progress" | "blocked")
+        }) {
+            let risk_boost = match item.risk_level.as_str() {
+                "critical" => 0.16,
+                "high" => 0.12,
+                "medium" => 0.06,
+                _ => 0.0,
+            };
+            let content = [
+                item.summary.as_deref(),
+                Some(item.risk_summary.as_str()),
+                item.expected_outcome.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ");
+            candidates.push(create_context_datum(
+                ContextDatumDraft {
+                    id: format!("context-action-{}", item.id),
+                    kind: "pending_action".to_string(),
+                    project_id: project.id.clone(),
+                    thread_id: item.thread_id.clone(),
+                    title: item.title.clone(),
+                    content,
+                    confidence: if item.owner == "operator" { 0.95 } else { 0.78 },
+                    freshness: context_freshness(&item.updated_at, now),
+                    base_score: 0.36 + risk_boost,
+                    sources: vec![ContextSourceReference {
+                        entity_type: "ActionItem".to_string(),
+                        entity_id: item.id.clone(),
+                        label: item.title.clone(),
+                    }],
+                },
+                &prompt_tokens,
+                request.thread_id.as_deref(),
+            ));
+        }
+    }
+
+    if context_kind_enabled(request, "recent_change") {
+        for item in snapshot
+            .file_changes
+            .iter()
+            .filter(|item| item.project_id == project.id)
+            .take(12)
+        {
+            let freshness = context_freshness(&item.updated_at, now);
+            candidates.push(create_context_datum(
+                ContextDatumDraft {
+                    id: format!("context-file-{}", item.id),
+                    kind: "recent_change".to_string(),
+                    project_id: project.id.clone(),
+                    thread_id: item.thread_id.clone(),
+                    title: item.path.clone(),
+                    content: item
+                        .summary
+                        .clone()
+                        .unwrap_or_else(|| format!("{} {}", item.change_type, item.path)),
+                    confidence: 0.9,
+                    freshness,
+                    base_score: 0.3 + freshness * 0.16,
+                    sources: vec![
+                        ContextSourceReference {
+                            entity_type: "FileChange".to_string(),
+                            entity_id: item.id.clone(),
+                            label: item.path.clone(),
+                        },
+                        ContextSourceReference {
+                            entity_type: "Event".to_string(),
+                            entity_id: item.event_id.clone(),
+                            label: "File change event".to_string(),
+                        },
+                    ],
+                },
+                &prompt_tokens,
+                request.thread_id.as_deref(),
+            ));
+        }
+
+        for item in snapshot
+            .events
+            .iter()
+            .filter(|item| item.project_id == project.id && item.category == "work_change")
+            .take(8)
+        {
+            let freshness = context_freshness(&item.timestamp, now);
+            candidates.push(create_context_datum(
+                ContextDatumDraft {
+                    id: format!("context-event-{}", item.id),
+                    kind: "recent_change".to_string(),
+                    project_id: project.id.clone(),
+                    thread_id: item.thread_id.clone(),
+                    title: item.event_type.clone(),
+                    content: item.summary.clone(),
+                    confidence: 0.82,
+                    freshness,
+                    base_score: 0.26 + freshness * 0.14,
+                    sources: vec![ContextSourceReference {
+                        entity_type: "Event".to_string(),
+                        entity_id: item.id.clone(),
+                        label: item.summary.clone(),
+                    }],
+                },
+                &prompt_tokens,
+                request.thread_id.as_deref(),
+            ));
+        }
+    }
+
+    candidates.sort_by(|left, right| {
+        right
+            .deterministic_score
+            .partial_cmp(&left.deterministic_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    candidates.truncate(MAX_CONTEXT_CANDIDATES);
+    candidates
+}
+
+fn select_context_budget(
+    candidates: Vec<ContextDatum>,
+    max_items: usize,
+    max_tokens: usize,
+) -> Vec<ContextDatum> {
+    let mut selected = Vec::new();
+    let mut token_total = 0;
+
+    for candidate in candidates {
+        if selected.len() >= max_items {
+            break;
+        }
+        if !selected.is_empty() && token_total + candidate.estimated_tokens > max_tokens {
+            continue;
+        }
+        token_total += candidate.estimated_tokens;
+        selected.push(candidate);
+    }
+
+    selected
+}
+
+fn compose_context(items: &[ContextDatum]) -> String {
+    items
+        .iter()
+        .map(|item| {
+            let sources = item
+                .sources
+                .iter()
+                .map(|source| format!("{}:{}", source.entity_type, source.entity_id))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "- [{}] {}: {} (sources: {})",
+                item.kind, item.title, item.content, sources
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn rank_context_with_model(
+    config: &ContextModelConfig,
+    prompt: &str,
+    project: &ApiProject,
+    request: &NormalizedContextRequest,
+    candidates: &[ContextDatum],
+) -> Result<ModelContextResult, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "failed to initialize context model client".to_string())?;
+    let model_input = json!({
+        "prompt": redact_sensitive_text(prompt),
+        "project": {
+            "id": project.id,
+            "name": redact_sensitive_text(&project.name),
+            "summary": project.summary.as_deref().map(redact_sensitive_text)
+        },
+        "threadId": request.thread_id,
+        "maxItems": request.max_items,
+        "maxTokens": request.max_tokens,
+        "candidates": candidates
+    });
+    let body = json!({
+        "model": config.model,
+        "temperature": 0,
+        "messages": [
+            {
+                "role": "system",
+                "content": "Rank only the supplied candidate IDs for relevance. Return JSON with selections [{datumId,relevanceScore,rationale}] and composedContext. Never add facts absent from candidates. Keep source IDs in composedContext."
+            },
+            {
+                "role": "user",
+                "content": serde_json::to_string(&model_input).unwrap_or_default()
+            }
+        ]
+    });
+    let mut request_builder = client.post(&config.endpoint).json(&body);
+
+    if let Some(token) = config.token.as_deref() {
+        request_builder = request_builder.bearer_auth(token);
+    }
+
+    let response = request_builder
+        .send()
+        .await
+        .map_err(|_| "context model request failed".to_string())?;
+
+    if !response.status().is_success() {
+        return Err("context model returned an unsuccessful status".to_string());
+    }
+
+    let response_json = response
+        .json::<Value>()
+        .await
+        .map_err(|_| "context model response was not valid JSON".to_string())?;
+    let content = response_json
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "context model response did not contain message content".to_string())?;
+    let trimmed = content.trim();
+    let unwrapped = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .unwrap_or(trimmed)
+        .strip_suffix("```")
+        .unwrap_or(trimmed)
+        .trim();
+
+    serde_json::from_str(unwrapped)
+        .map_err(|_| "context model message did not match the required schema".to_string())
+}
+
+fn apply_model_context_result(
+    candidates: &[ContextDatum],
+    result: &ModelContextResult,
+) -> Vec<ContextDatum> {
+    let mut selected = Vec::new();
+
+    for selection in &result.selections {
+        if selected
+            .iter()
+            .any(|item: &ContextDatum| item.id == selection.datum_id)
+        {
+            continue;
+        }
+        let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| candidate.id == selection.datum_id)
+        else {
+            continue;
+        };
+        let mut candidate = candidate.clone();
+        candidate.relevance_score = selection.relevance_score.clamp(0.0, 1.0);
+        candidate.relevance_rationale = redact_sensitive_text(&selection.rationale);
+        selected.push(candidate);
+    }
+
+    selected.sort_by(|left, right| {
+        right
+            .relevance_score
+            .partial_cmp(&left.relevance_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                right
+                    .deterministic_score
+                    .partial_cmp(&left.deterministic_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    selected
+}
+
+fn redacted_project(project: &ApiProject) -> ApiProject {
+    ApiProject {
+        kind: "Project",
+        id: project.id.clone(),
+        created_at: project.created_at.clone(),
+        updated_at: project.updated_at.clone(),
+        profile_id: project.profile_id.clone(),
+        name: redact_sensitive_text(&project.name),
+        description: project.description.as_deref().map(redact_sensitive_text),
+        summary: project.summary.as_deref().map(redact_sensitive_text),
+        workspace_path: project.workspace_path.as_deref().map(redact_sensitive_text),
+        repository_remote: project
+            .repository_remote
+            .as_deref()
+            .map(redact_sensitive_text),
+        descriptors: project
+            .descriptors
+            .iter()
+            .map(|value| redact_sensitive_text(value))
+            .collect(),
+    }
+}
+
+async fn create_context_bundle(
+    snapshot: &ApiSnapshot,
+    project: &ApiProject,
+    request: &NormalizedContextRequest,
+    model_config: Option<&ContextModelConfig>,
+) -> ContextBundle {
+    let now = chrono::Utc::now();
+    let generated_at = now.to_rfc3339_opts(SecondsFormat::Millis, true);
+    let candidates = create_context_candidates(snapshot, project, request, now);
+    let candidate_count = candidates.len();
+    let mut ranked = candidates.clone();
+    let mut ranking_mode = "deterministic_fallback";
+    let mut ranking_reason = "No context model was configured.".to_string();
+    let mut model_name = None;
+    let mut model_composition = String::new();
+
+    if let Some(config) = model_config {
+        match rank_context_with_model(config, &request.prompt, project, request, &candidates).await
+        {
+            Ok(result) => {
+                let model_ranked = apply_model_context_result(&candidates, &result);
+                if model_ranked.is_empty() {
+                    ranking_reason =
+                        "The context model returned no valid candidate IDs.".to_string();
+                } else {
+                    ranked = model_ranked;
+                    ranking_mode = "model";
+                    ranking_reason =
+                        "Ranked and composed by the configured context model.".to_string();
+                    model_name = Some(config.model.clone());
+                    model_composition = redact_sensitive_text(&result.composed_context);
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "SubMind context model fallback: {}",
+                    redact_sensitive_text(&error)
+                );
+                ranking_reason =
+                    "The context model failed; deterministic ranking was used.".to_string();
+            }
+        }
+    }
+
+    let items = select_context_budget(ranked, request.max_items, request.max_tokens);
+    let deterministic_composition = compose_context(&items);
+    let composed_context = if ranking_mode == "model" && !model_composition.trim().is_empty() {
+        model_composition.trim().to_string()
+    } else {
+        deterministic_composition
+    };
+    let redacted_prompt = redact_sensitive_text(&request.prompt);
+    let prompt_fingerprint = fingerprint_sensitive_value(&redacted_prompt);
+    let bundle_fingerprint = fingerprint_sensitive_value(&format!(
+        "{}:{}:{}:{}",
+        project.id,
+        request.thread_id.as_deref().unwrap_or("project"),
+        prompt_fingerprint,
+        generated_at
+    ));
+    let prompt_summary = format!(
+        "Context request for {} ({} characters).",
+        redact_sensitive_text(&project.name),
+        redacted_prompt.chars().count()
+    );
+
+    ContextBundle {
+        kind: "ContextBundle",
+        api_version: "v1",
+        bundle_id: format!("context-bundle-{bundle_fingerprint}"),
+        generated_at,
+        project: redacted_project(project),
+        thread_id: request.thread_id.clone(),
+        prompt: ContextPromptSummary {
+            fingerprint: prompt_fingerprint,
+            summary: prompt_summary,
+        },
+        limits: ContextLimits {
+            max_items: request.max_items,
+            max_tokens: request.max_tokens,
+        },
+        ranking: json!({
+            "mode": ranking_mode,
+            "model": model_name,
+            "reason": ranking_reason
+        }),
+        estimated_tokens: estimate_context_tokens(&composed_context),
+        omitted_count: candidate_count.saturating_sub(items.len()),
+        audit_event_id: format!("event-context-supplied-{bundle_fingerprint}"),
+        items,
+        composed_context,
+    }
+}
+
+async fn write_context_audit_event(
+    db_path: &Path,
+    snapshot: &ApiSnapshot,
+    bundle: &ContextBundle,
+) -> Result<(), String> {
+    let options = SqliteConnectOptions::new()
+        .filename(db_path)
+        .create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .map_err(|error| format!("Failed to open SubMind database for audit: {error}"))?;
+    let sources = bundle
+        .items
+        .iter()
+        .flat_map(|item| item.sources.clone())
+        .collect::<Vec<_>>();
+    let source_id = |kind: &str| {
+        sources
+            .iter()
+            .find(|source| source.entity_type == kind)
+            .map(|source| source.entity_id.clone())
+    };
+    let session_id = bundle.thread_id.as_deref().and_then(|thread_id| {
+        snapshot
+            .threads
+            .iter()
+            .find(|thread| thread.id == thread_id)
+            .map(|thread| thread.session_id.clone())
+    });
+    let metadata = json!({
+        "bundleId": bundle.bundle_id,
+        "promptFingerprint": bundle.prompt.fingerprint,
+        "rankingMode": bundle.ranking.get("mode"),
+        "model": bundle.ranking.get("model"),
+        "contextDatumIds": bundle.items.iter().map(|item| item.id.clone()).collect::<Vec<_>>(),
+        "sources": sources,
+        "suppliedItems": bundle.items,
+        "composedContext": bundle.composed_context,
+        "estimatedTokens": bundle.estimated_tokens,
+        "omittedCount": bundle.omitted_count
+    });
+    let summary = format!(
+        "SubMind supplied {} context data points for {}.",
+        bundle.items.len(),
+        bundle.project.name
+    );
+
+    sqlx::query(
+        r#"INSERT INTO events
+       (id, created_at, updated_at, project_id, session_id, thread_id, task_id,
+        file_change_id, guidance_item_id, action_item_id, memory_item_id,
+        origin_type, event_type, category, node_category, timestamp, summary, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 'submind',
+        'context_bundle_supplied', 'guidance', 'cognitive', ?, ?, ?)
+       ON CONFLICT(id) DO NOTHING"#,
+    )
+    .bind(&bundle.audit_event_id)
+    .bind(&bundle.generated_at)
+    .bind(&bundle.generated_at)
+    .bind(&bundle.project.id)
+    .bind(session_id)
+    .bind(&bundle.thread_id)
+    .bind(source_id("FileChange"))
+    .bind(source_id("GuidanceItem"))
+    .bind(source_id("ActionItem"))
+    .bind(source_id("MemoryItem"))
+    .bind(&bundle.generated_at)
+    .bind(summary)
+    .bind(serde_json::to_string(&metadata).map_err(|_| "Failed to serialize audit metadata")?)
+    .execute(&pool)
+    .await
+    .map_err(|error| format!("Failed to write context audit event: {error}"))?;
+
+    pool.close().await;
+    Ok(())
+}
+
 fn search_project_summaries(
     snapshot: &ApiSnapshot,
     query: Option<&str>,
@@ -1528,4 +2647,283 @@ fn tokenize_query(query: Option<&str>) -> Vec<String> {
 
 fn normalize_search_value(value: &str) -> String {
     value.replace('\\', "/").to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_project() -> ApiProject {
+        ApiProject {
+            kind: "Project",
+            id: "project-submind".to_string(),
+            created_at: "2026-07-01T00:00:00.000Z".to_string(),
+            updated_at: "2026-07-03T00:00:00.000Z".to_string(),
+            profile_id: "profile-primary".to_string(),
+            name: "SubMind".to_string(),
+            description: Some("Operator control plane".to_string()),
+            summary: Some("Project-aware retained context".to_string()),
+            workspace_path: None,
+            repository_remote: None,
+            descriptors: vec!["tauri".to_string(), "typescript".to_string()],
+        }
+    }
+
+    fn test_request() -> NormalizedContextRequest {
+        NormalizedContextRequest {
+            project_id: Some("project-submind".to_string()),
+            project_query: None,
+            thread_id: None,
+            prompt: "What architecture context matters?".to_string(),
+            max_items: 8,
+            max_tokens: 1_200,
+            kinds: vec![
+                "project_context".to_string(),
+                "memory".to_string(),
+                "guidance".to_string(),
+                "pending_action".to_string(),
+            ],
+        }
+    }
+
+    #[test]
+    fn context_request_requires_scope_and_bounded_prompt() {
+        let missing_scope = normalize_context_request(ContextRequest {
+            project_id: None,
+            project_query: None,
+            thread_id: None,
+            prompt: "context".to_string(),
+            max_items: None,
+            max_tokens: None,
+            kinds: None,
+        });
+        let empty_prompt = normalize_context_request(ContextRequest {
+            project_id: Some("project-submind".to_string()),
+            project_query: None,
+            thread_id: None,
+            prompt: "  ".to_string(),
+            max_items: None,
+            max_tokens: None,
+            kinds: None,
+        });
+
+        assert!(missing_scope.is_err());
+        assert!(empty_prompt.is_err());
+    }
+
+    #[test]
+    fn deterministic_candidates_filter_state_and_redact_before_ranking() {
+        let project = test_project();
+        let mut snapshot = ApiSnapshot::default();
+        snapshot.projects.push(project.clone());
+        snapshot.memory.extend([
+            ApiMemoryItem {
+                kind: "MemoryItem",
+                id: "memory-active".to_string(),
+                created_at: project.created_at.clone(),
+                updated_at: project.updated_at.clone(),
+                project_id: Some(project.id.clone()),
+                session_id: None,
+                thread_id: None,
+                bucket: "Architecture Notes".to_string(),
+                status: "active".to_string(),
+                summary: "API token policy".to_string(),
+                content: "token = sm_abcdefghijklmnopqrstuvwxyz1234567890".to_string(),
+                confidence: 0.9,
+                freshness: 0.9,
+                curation_state: "confirmed".to_string(),
+                source_event_ids: Vec::new(),
+                source_file_change_ids: Vec::new(),
+                linked_action_item_ids: Vec::new(),
+                linked_guidance_item_ids: Vec::new(),
+                change_summary: None,
+                is_pinned: true,
+                is_edited: false,
+            },
+            ApiMemoryItem {
+                kind: "MemoryItem",
+                id: "memory-archived".to_string(),
+                created_at: project.created_at.clone(),
+                updated_at: project.updated_at.clone(),
+                project_id: Some(project.id.clone()),
+                session_id: None,
+                thread_id: None,
+                bucket: "Architecture Notes".to_string(),
+                status: "archived".to_string(),
+                summary: "Old context".to_string(),
+                content: "Do not supply".to_string(),
+                confidence: 1.0,
+                freshness: 1.0,
+                curation_state: "confirmed".to_string(),
+                source_event_ids: Vec::new(),
+                source_file_change_ids: Vec::new(),
+                linked_action_item_ids: Vec::new(),
+                linked_guidance_item_ids: Vec::new(),
+                change_summary: None,
+                is_pinned: false,
+                is_edited: false,
+            },
+        ]);
+
+        let candidates =
+            create_context_candidates(&snapshot, &project, &test_request(), chrono::Utc::now());
+        let active = candidates
+            .iter()
+            .find(|candidate| candidate.id == "context-memory-memory-active")
+            .expect("active memory should be a candidate");
+
+        assert_eq!(active.sensitivity, "protected_redacted");
+        assert!(!active.content.contains("sm_abcdefghijklmnopqrstuvwxyz"));
+        assert!(!candidates
+            .iter()
+            .any(|candidate| candidate.id.contains("memory-archived")));
+    }
+
+    #[test]
+    fn model_results_cannot_inject_unknown_candidates() {
+        let candidate = create_context_datum(
+            ContextDatumDraft {
+                id: "context-known".to_string(),
+                kind: "project_context".to_string(),
+                project_id: "project-submind".to_string(),
+                thread_id: None,
+                title: "Known".to_string(),
+                content: "Known content".to_string(),
+                confidence: 1.0,
+                freshness: 1.0,
+                base_score: 0.5,
+                sources: Vec::new(),
+            },
+            &[],
+            None,
+        );
+        let result = ModelContextResult {
+            selections: vec![ModelContextSelection {
+                datum_id: "context-invented".to_string(),
+                relevance_score: 1.0,
+                rationale: "Invented".to_string(),
+            }],
+            composed_context: "Invented content".to_string(),
+        };
+
+        assert!(apply_model_context_result(&[candidate], &result).is_empty());
+    }
+
+    #[test]
+    fn context_budget_never_exceeds_item_limit() {
+        let candidates = (0..5)
+            .map(|index| ContextDatum {
+                id: format!("context-{index}"),
+                kind: "memory".to_string(),
+                project_id: "project-submind".to_string(),
+                thread_id: None,
+                title: "Context".to_string(),
+                content: "Content".to_string(),
+                confidence: 1.0,
+                freshness: 1.0,
+                sensitivity: "normal".to_string(),
+                deterministic_score: 0.5,
+                relevance_score: 0.5,
+                relevance_rationale: "Deterministic".to_string(),
+                estimated_tokens: 20,
+                sources: Vec::new(),
+            })
+            .collect();
+
+        assert_eq!(select_context_budget(candidates, 2, 1_000).len(), 2);
+    }
+
+    #[test]
+    fn context_audit_persists_exact_bundle_without_raw_prompt() {
+        let db_path = std::env::temp_dir().join(format!(
+            "submind-context-audit-{}-{}.db",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+
+        tauri::async_runtime::block_on(async {
+            let options = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let setup_pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+                .expect("test database should open");
+            sqlx::query(
+                r#"CREATE TABLE events (
+                  id TEXT PRIMARY KEY NOT NULL,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  project_id TEXT NOT NULL,
+                  session_id TEXT,
+                  thread_id TEXT,
+                  task_id TEXT,
+                  file_change_id TEXT,
+                  guidance_item_id TEXT,
+                  action_item_id TEXT,
+                  memory_item_id TEXT,
+                  origin_type TEXT NOT NULL,
+                  event_type TEXT NOT NULL,
+                  category TEXT NOT NULL,
+                  node_category TEXT NOT NULL,
+                  timestamp TEXT NOT NULL,
+                  summary TEXT NOT NULL,
+                  metadata_json TEXT NOT NULL
+                )"#,
+            )
+            .execute(&setup_pool)
+            .await
+            .expect("events table should be created");
+            setup_pool.close().await;
+
+            let project = test_project();
+            let snapshot = ApiSnapshot {
+                projects: vec![project.clone()],
+                ..ApiSnapshot::default()
+            };
+            let mut request = test_request();
+            request.prompt = "Private operator prompt that must not be retained".to_string();
+            request.kinds = vec!["project_context".to_string()];
+            let bundle = create_context_bundle(&snapshot, &project, &request, None).await;
+
+            write_context_audit_event(&db_path, &snapshot, &bundle)
+                .await
+                .expect("context audit should persist");
+
+            let options = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(false)
+                .read_only(true);
+            let read_pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+                .expect("test database should reopen");
+            let row = sqlx::query(
+                "SELECT event_type, project_id, metadata_json FROM events WHERE id = ?",
+            )
+            .bind(&bundle.audit_event_id)
+            .fetch_one(&read_pool)
+            .await
+            .expect("audit event should exist");
+            let metadata =
+                required_string(&row, "metadata_json").expect("audit metadata should be readable");
+
+            assert_eq!(
+                required_string(&row, "event_type").expect("event type should exist"),
+                "context_bundle_supplied"
+            );
+            assert_eq!(
+                required_string(&row, "project_id").expect("project id should exist"),
+                project.id
+            );
+            assert!(metadata.contains(&bundle.bundle_id));
+            assert!(metadata.contains(&bundle.composed_context));
+            assert!(!metadata.contains("Private operator prompt"));
+            read_pool.close().await;
+        });
+
+        let _ = std::fs::remove_file(db_path);
+    }
 }

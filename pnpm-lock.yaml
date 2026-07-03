@@ -53,6 +53,9 @@ importers:
       '@submind/protocol-codex':
         specifier: workspace:*
         version: link:../../packages/protocol-codex
+      '@submind/protocol-copilot':
+        specifier: workspace:*
+        version: link:../../packages/protocol-copilot
       '@submind/shared-schemas':
         specifier: workspace:*
         version: link:../../packages/shared-schemas
@@ -94,6 +97,15 @@ importers:
         version: link:../shared-schemas
 
   packages/protocol-codex:
+    dependencies:
+      '@submind/shared-schemas':
+        specifier: workspace:*
+        version: link:../shared-schemas
+      '@submind/store':
+        specifier: workspace:*
+        version: link:../store
+
+  packages/protocol-copilot:
     dependencies:
       '@submind/shared-schemas':
         specifier: workspace:*
@@ -151,6 +163,9 @@ importers:
 
   packages/workers:
     dependencies:
+      '@submind/policy':
+        specifier: workspace:*
+        version: link:../policy
       '@submind/shared-schemas':
         specifier: workspace:*
         version: link:../shared-schemas

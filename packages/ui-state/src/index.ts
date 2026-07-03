@@ -267,6 +267,37 @@ export interface GuidanceInspectorModel {
   historyItems: RetainedHistoryItemModel[];
 }
 
+export interface ContextSupplySourceModel {
+  entityType: string;
+  entityId: string;
+  label: string;
+}
+
+export interface ContextSupplyItemModel {
+  datumId: string;
+  kind: string;
+  title: string;
+  content: string;
+  relevanceLabel: string;
+  rationale: string;
+  sources: ContextSupplySourceModel[];
+}
+
+export interface ContextSupplyModel {
+  hasSupply: boolean;
+  eventId: string | null;
+  bundleId: string | null;
+  timestampLabel: string;
+  projectName: string;
+  threadLabel: string;
+  rankingLabel: string;
+  modelLabel: string;
+  tokenLabel: string;
+  omittedLabel: string;
+  composedContext: string;
+  items: ContextSupplyItemModel[];
+}
+
 export interface ActionCardModel {
   actionId: string;
   title: string;
@@ -384,6 +415,7 @@ export interface SubMindShellViewModel {
     posture: ShellCardModel;
     cards: GuidanceCardModel[];
     inspector: GuidanceInspectorModel;
+    suppliedContext: ContextSupplyModel;
   };
   actions: {
     title: string;
@@ -708,7 +740,9 @@ export function createShellSnapshotQueryOptions(repository: SubMindRepository) {
   return queryOptions({
     queryKey: shellQueryKey,
     queryFn: () => repository.getSnapshot(),
-    staleTime: Infinity
+    staleTime: 2_000,
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: false
   });
 }
 
@@ -2185,6 +2219,129 @@ function getGuidanceSupportEvents(
     .sort((left, right) => compareStrings(right.timestamp, left.timestamp));
 }
 
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readContextSupplySource(value: unknown): ContextSupplySourceModel | null {
+  if (
+    !isUnknownRecord(value) ||
+    typeof value.entityType !== "string" ||
+    typeof value.entityId !== "string" ||
+    typeof value.label !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    entityType: value.entityType,
+    entityId: value.entityId,
+    label: value.label
+  };
+}
+
+function readContextSupplyItem(value: unknown): ContextSupplyItemModel | null {
+  if (
+    !isUnknownRecord(value) ||
+    typeof value.id !== "string" ||
+    typeof value.kind !== "string" ||
+    typeof value.title !== "string" ||
+    typeof value.content !== "string"
+  ) {
+    return null;
+  }
+
+  const relevanceScore =
+    typeof value.relevanceScore === "number" ? value.relevanceScore : 0;
+  const sources = Array.isArray(value.sources)
+    ? value.sources
+        .map(readContextSupplySource)
+        .filter((source): source is ContextSupplySourceModel => source !== null)
+    : [];
+
+  return {
+    datumId: value.id,
+    kind: formatTitleCase(value.kind),
+    title: value.title,
+    content: value.content,
+    relevanceLabel: `${Math.round(relevanceScore * 100)}% relevance`,
+    rationale:
+      typeof value.relevanceRationale === "string"
+        ? value.relevanceRationale
+        : "No relevance rationale was retained.",
+    sources
+  };
+}
+
+function createContextSupplyView(
+  snapshot: SubMindStoreSnapshot,
+  activeProject: Project | null
+): ContextSupplyModel {
+  const event = snapshot.events
+    .filter(
+      (candidate) =>
+        candidate.eventType === "context_bundle_supplied" &&
+        (!activeProject || candidate.projectId === activeProject.id)
+    )
+    .sort((left, right) => compareStrings(right.timestamp, left.timestamp))[0];
+  const empty: ContextSupplyModel = {
+    hasSupply: false,
+    eventId: null,
+    bundleId: null,
+    timestampLabel: "No supply recorded",
+    projectName: activeProject?.name ?? "No project",
+    threadLabel: "Project scope",
+    rankingLabel: "No ranking",
+    modelLabel: "No model",
+    tokenLabel: "0 estimated tokens",
+    omittedLabel: "0 omitted candidates",
+    composedContext: "",
+    items: []
+  };
+
+  if (!event || !isUnknownRecord(event.metadata)) {
+    return empty;
+  }
+
+  const metadata = event.metadata;
+  const items = Array.isArray(metadata.suppliedItems)
+    ? metadata.suppliedItems
+        .map(readContextSupplyItem)
+        .filter((item): item is ContextSupplyItemModel => item !== null)
+    : [];
+  const rankingMode =
+    typeof metadata.rankingMode === "string"
+      ? formatTitleCase(metadata.rankingMode)
+      : "Unknown ranking";
+  const model = typeof metadata.model === "string" ? metadata.model : null;
+  const estimatedTokens =
+    typeof metadata.estimatedTokens === "number" ? metadata.estimatedTokens : 0;
+  const omittedCount =
+    typeof metadata.omittedCount === "number" ? metadata.omittedCount : 0;
+  const thread = event.threadId
+    ? snapshot.threads.find((candidate) => candidate.id === event.threadId)
+    : null;
+
+  return {
+    hasSupply: true,
+    eventId: event.id,
+    bundleId: typeof metadata.bundleId === "string" ? metadata.bundleId : null,
+    timestampLabel: formatTimestampLabel(event.timestamp),
+    projectName:
+      getProjectById(snapshot, event.projectId)?.name ?? "Unknown project",
+    threadLabel: thread?.title ?? (event.threadId ? event.threadId : "Project scope"),
+    rankingLabel: rankingMode,
+    modelLabel: model ?? "Deterministic fallback",
+    tokenLabel: pluralize(estimatedTokens, "estimated token"),
+    omittedLabel: pluralize(omittedCount, "omitted candidate"),
+    composedContext:
+      typeof metadata.composedContext === "string"
+        ? metadata.composedContext
+        : "No composed context was retained.",
+    items
+  };
+}
+
 function createGuidanceView(
   snapshot: SubMindStoreSnapshot,
   state: ShellUiState,
@@ -2282,6 +2439,7 @@ function createGuidanceView(
           : "violet"
     ),
     cards,
+    suppliedContext: createContextSupplyView(snapshot, activeProject),
     inspector: {
       guidanceId: activeGuidance?.id ?? null,
       title: activeGuidance?.title ?? "Select guidance",

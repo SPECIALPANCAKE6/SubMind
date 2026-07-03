@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  contextDatumKinds,
+  contextSourceEntityKinds,
   coreEntityKinds,
   eventOrigins,
   eventNodeCategories,
@@ -60,5 +62,23 @@ describe("shared schemas", () => {
       focus: "explicit_action_or_double_click"
     });
     expect(projectStackTransitions.focused).toEqual(["selected"]);
+  });
+
+  it("defines the context bundle source vocabulary", () => {
+    expect(contextDatumKinds).toEqual([
+      "project_context",
+      "memory",
+      "guidance",
+      "recent_change",
+      "pending_action"
+    ]);
+    expect(contextSourceEntityKinds).toEqual([
+      "Project",
+      "MemoryItem",
+      "GuidanceItem",
+      "Event",
+      "FileChange",
+      "ActionItem"
+    ]);
   });
 });
