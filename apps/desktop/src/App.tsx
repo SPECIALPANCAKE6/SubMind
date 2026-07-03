@@ -81,6 +81,8 @@ export function DesktopApp() {
   const primaryScreen = useShellStore((state) => state.primaryScreen);
   const selectedProjectId = useShellStore((state) => state.selectedProjectId);
   const focusedProjectId = useShellStore((state) => state.focusedProjectId);
+  const projectSearchQuery = useShellStore((state) => state.projectSearchQuery);
+  const secretRevealTarget = useShellStore((state) => state.secretRevealTarget);
   const activeSessionId = useShellStore((state) => state.activeSessionId);
   const activeThreadId = useShellStore((state) => state.activeThreadId);
   const activeMemoryId = useShellStore((state) => state.activeMemoryId);
@@ -99,6 +101,11 @@ export function DesktopApp() {
     (state) => state.clearProjectSelection
   );
   const clearProjectFocus = useShellStore((state) => state.clearProjectFocus);
+  const setProjectSearchQuery = useShellStore(
+    (state) => state.setProjectSearchQuery
+  );
+  const revealSecretTarget = useShellStore((state) => state.revealSecretTarget);
+  const hideSecretTarget = useShellStore((state) => state.hideSecretTarget);
   const selectSession = useShellStore((state) => state.selectSession);
   const selectThread = useShellStore((state) => state.selectThread);
   const selectMemory = useShellStore((state) => state.selectMemory);
@@ -156,6 +163,18 @@ export function DesktopApp() {
     activeMemory?.isPinned
   ]);
 
+  useEffect(() => {
+    if (!secretRevealTarget) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      hideSecretTarget();
+    }, 30_000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [hideSecretTarget, secretRevealTarget]);
+
   if (snapshotQuery.error) {
     return <ErrorState message={snapshotQuery.error.message} />;
   }
@@ -169,6 +188,8 @@ export function DesktopApp() {
     primaryScreen,
     selectedProjectId,
     focusedProjectId,
+    projectSearchQuery,
+    secretRevealTarget,
     activeSessionId,
     activeThreadId,
     activeMemoryId,
@@ -234,6 +255,9 @@ export function DesktopApp() {
         onFocusSelectedProject: focusSelectedProject,
         onClearProjectSelection: clearProjectSelection,
         onClearProjectFocus: clearProjectFocus,
+        onProjectSearchChange: setProjectSearchQuery,
+        onRevealSecretTarget: revealSecretTarget,
+        onHideSecretTarget: hideSecretTarget,
         onSelectSession: selectSession,
         onSelectThread: selectThread,
         onSelectMemory: selectMemory,

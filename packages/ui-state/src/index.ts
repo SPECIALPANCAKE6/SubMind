@@ -15,6 +15,7 @@ import {
   getProjectSessions,
   getSessionTasks,
   getSessionThreads,
+  projectMatchesSearchQuery,
   type SubMindRepository,
   type SubMindStoreSnapshot
 } from "@submind/store";
@@ -22,6 +23,7 @@ import {
   createActionCheckpointSummary,
   createGuidanceCheckpointSummary
 } from "@submind/workers";
+import { redactSensitiveObject } from "@submind/policy";
 import type {
   ActionItem,
   Event,
@@ -49,11 +51,28 @@ export type LayoutMode = (typeof layoutModes)[number];
 export type PrimaryScreen = (typeof primaryScreens)[number];
 export type AppScope = "global" | "project";
 
+export interface SecretRevealTarget {
+  label: string;
+  fingerprint: string;
+}
+
+export interface SecretProtectionModel {
+  target: SecretRevealTarget | null;
+  label: string;
+  canReveal: boolean;
+  isRevealing: boolean;
+  redactionCount: number;
+  kindLabels: string[];
+  autoHideMs: number;
+}
+
 export interface ShellUiState {
   layoutMode: LayoutMode;
   primaryScreen: PrimaryScreen;
   selectedProjectId: string | null;
   focusedProjectId: string | null;
+  projectSearchQuery: string;
+  secretRevealTarget: SecretRevealTarget | null;
   activeSessionId: string | null;
   activeThreadId: string | null;
   activeMemoryId: string | null;
@@ -64,6 +83,11 @@ export interface ShellUiState {
 export interface MetricItem {
   label: string;
   value: string;
+  action?: {
+    kind: "clear-selection" | "clear-focus";
+    label: string;
+    value: string;
+  };
 }
 
 export interface ToggleItem<T extends string> {
@@ -78,6 +102,11 @@ export interface ShellCardModel {
   title: string;
   body: string;
   tone: "plum" | "violet" | "slate" | "amber";
+  facts?: string[];
+  details?: Array<{
+    label: string;
+    value: string;
+  }>;
 }
 
 export interface ProjectStackCardModel {
@@ -111,6 +140,7 @@ export interface SessionThreadItemModel {
   threadId: string;
   title: string;
   summary: string;
+  sourceLabel: string;
   status: Thread["status"];
   updatedAtLabel: string;
   taskCount: number;
@@ -289,6 +319,7 @@ export interface SubMindShellViewModel {
   primaryScreen: PrimaryScreen;
   scope: AppScope;
   activeProject: Project | null;
+  secretProtection: SecretProtectionModel;
   commandStrip: {
     title: string;
     subtitle: string;
@@ -301,6 +332,14 @@ export interface SubMindShellViewModel {
   projectStack: {
     title: string;
     body: string;
+    search: {
+      query: string;
+      placeholder: string;
+      resultLabel: string;
+      filteredCount: number;
+      totalCount: number;
+      isFiltering: boolean;
+    };
     cards: ProjectStackCardModel[];
     focusedContextCards: ShellCardModel[];
   };
@@ -372,6 +411,9 @@ export interface ShellStore extends ShellUiState {
   toggleProjectFocus: (projectId: string) => void;
   clearProjectSelection: () => void;
   clearProjectFocus: () => void;
+  setProjectSearchQuery: (query: string) => void;
+  revealSecretTarget: (target: SecretRevealTarget) => void;
+  hideSecretTarget: () => void;
   selectSession: (sessionId: string) => void;
   selectThread: (threadId: string) => void;
   selectMemory: (memoryId: string) => void;
@@ -398,6 +440,7 @@ function pluralize(count: number, singular: string): string {
 function resetEntitySelections(state: ShellUiState): ShellUiState {
   return {
     ...state,
+    secretRevealTarget: null,
     activeSessionId: null,
     activeThreadId: null,
     activeMemoryId: null,
@@ -427,6 +470,8 @@ export function createInitialShellUiState(
     selectedProjectId:
       snapshot.profiles[0]?.defaultProjectId ?? snapshot.projects[0]?.id ?? null,
     focusedProjectId: null,
+    projectSearchQuery: "",
+    secretRevealTarget: null,
     activeSessionId: null,
     activeThreadId: null,
     activeMemoryId: null,
@@ -474,6 +519,7 @@ export function setShellPrimaryScreen(
 ): ShellUiState {
   return {
     ...state,
+    secretRevealTarget: null,
     primaryScreen
   };
 }
@@ -531,12 +577,23 @@ export function clearFocusedShellProject(state: ShellUiState): ShellUiState {
   return withProjectSelection(state, state.focusedProjectId, null);
 }
 
+export function setShellProjectSearchQuery(
+  state: ShellUiState,
+  query: string
+): ShellUiState {
+  return {
+    ...state,
+    projectSearchQuery: query
+  };
+}
+
 export function selectShellSession(
   state: ShellUiState,
   sessionId: string
 ): ShellUiState {
   return {
     ...state,
+    secretRevealTarget: null,
     activeSessionId: state.activeSessionId === sessionId ? null : sessionId,
     activeThreadId: null
   };
@@ -548,6 +605,7 @@ export function selectShellThread(
 ): ShellUiState {
   return {
     ...state,
+    secretRevealTarget: null,
     activeThreadId: state.activeThreadId === threadId ? null : threadId
   };
 }
@@ -558,6 +616,7 @@ export function selectShellMemory(
 ): ShellUiState {
   return {
     ...state,
+    secretRevealTarget: null,
     activeMemoryId: state.activeMemoryId === memoryId ? null : memoryId
   };
 }
@@ -568,6 +627,7 @@ export function selectShellGuidance(
 ): ShellUiState {
   return {
     ...state,
+    secretRevealTarget: null,
     activeGuidanceId: state.activeGuidanceId === guidanceId ? null : guidanceId
   };
 }
@@ -578,7 +638,25 @@ export function selectShellAction(
 ): ShellUiState {
   return {
     ...state,
+    secretRevealTarget: null,
     activeActionId: state.activeActionId === actionId ? null : actionId
+  };
+}
+
+export function revealShellSecretTarget(
+  state: ShellUiState,
+  target: SecretRevealTarget
+): ShellUiState {
+  return {
+    ...state,
+    secretRevealTarget: target
+  };
+}
+
+export function hideShellSecretTarget(state: ShellUiState): ShellUiState {
+  return {
+    ...state,
+    secretRevealTarget: null
   };
 }
 
@@ -587,6 +665,8 @@ export const useShellStore = create<ShellStore>((set) => ({
   primaryScreen: "dashboard",
   selectedProjectId: null,
   focusedProjectId: null,
+  projectSearchQuery: "",
+  secretRevealTarget: null,
   activeSessionId: null,
   activeThreadId: null,
   activeMemoryId: null,
@@ -601,6 +681,11 @@ export const useShellStore = create<ShellStore>((set) => ({
     set((state) => toggleShellProjectFocus(state, projectId)),
   clearProjectSelection: () => set((state) => clearShellProjectSelection(state)),
   clearProjectFocus: () => set((state) => clearFocusedShellProject(state)),
+  setProjectSearchQuery: (query) =>
+    set((state) => setShellProjectSearchQuery(state, query)),
+  revealSecretTarget: (target) =>
+    set((state) => revealShellSecretTarget(state, target)),
+  hideSecretTarget: () => set((state) => hideShellSecretTarget(state)),
   selectSession: (sessionId) => set((state) => selectShellSession(state, sessionId)),
   selectThread: (threadId) => set((state) => selectShellThread(state, threadId)),
   selectMemory: (memoryId) => set((state) => selectShellMemory(state, memoryId)),
@@ -673,20 +758,230 @@ function formatTitleCase(value: string): string {
     .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
+function detectRuntimeThreadSource(
+  events: Event[]
+): "Codex" | "Copilot" | "Mixed" | null {
+  const runtimeSources = new Set<"Codex" | "Copilot">();
+
+  for (const event of events) {
+    const metadataSource =
+      typeof event.metadata.source === "string" ? event.metadata.source : null;
+
+    if (metadataSource?.startsWith("codex") || event.originType === "codex") {
+      runtimeSources.add("Codex");
+    }
+
+    if (
+      metadataSource?.startsWith("copilot") ||
+      event.eventType.startsWith("copilot_")
+    ) {
+      runtimeSources.add("Copilot");
+    }
+  }
+
+  if (runtimeSources.size === 0) {
+    return null;
+  }
+
+  if (runtimeSources.size > 1) {
+    return "Mixed";
+  }
+
+  return [...runtimeSources][0] ?? null;
+}
+
+function detectDerivedThreadSource(events: Event[]): string | null {
+  const meaningfulOrigin = events.find(
+    (event) =>
+      event.originType === "submind" || event.originType === "subagent"
+  )?.originType;
+
+  if (!meaningfulOrigin) {
+    return null;
+  }
+
+  return meaningfulOrigin === "submind"
+    ? "SubMind"
+    : formatTitleCase(meaningfulOrigin);
+}
+
+function resolveThreadSourceLabel(
+  threadEvents: Event[],
+  sessionEvents: Event[]
+): string {
+  return (
+    detectRuntimeThreadSource(threadEvents) ??
+    detectRuntimeThreadSource(sessionEvents) ??
+    detectDerivedThreadSource(threadEvents) ??
+    detectDerivedThreadSource(sessionEvents) ??
+    "Unknown"
+  );
+}
+
 function createCard(
   id: string,
   label: string,
   title: string,
   body: string,
-  tone: ShellCardModel["tone"]
+  tone: ShellCardModel["tone"],
+  facts?: string[],
+  details?: ShellCardModel["details"]
 ): ShellCardModel {
-  return {
+  const card: ShellCardModel = {
     id,
     label,
     title,
     body,
     tone
   };
+
+  if (facts && facts.length > 0) {
+    card.facts = facts;
+  }
+
+  if (details && details.length > 0) {
+    card.details = details;
+  }
+
+  return card;
+}
+
+function compactFact(value: string | null | undefined): string | null {
+  const normalized = compactDashboardText(value ?? "", 28);
+  return normalized || null;
+}
+
+function buildFacts(
+  ...facts: Array<string | null | undefined>
+): string[] {
+  return facts
+    .map((fact) => compactFact(fact))
+    .filter((fact): fact is string => !!fact)
+    .slice(0, 4);
+}
+
+function buildDetailItems(
+  ...items: Array<
+    | {
+        label: string;
+        value: string | null | undefined;
+      }
+    | null
+    | undefined
+  >
+): NonNullable<ShellCardModel["details"]> {
+  return items
+    .filter(
+      (
+        item
+      ): item is {
+        label: string;
+        value: string | null | undefined;
+      } => !!item
+    )
+    .map((item) => {
+      const value = compactDashboardText(item.value ?? "", 84);
+      return value
+        ? {
+            label: item.label,
+            value
+          }
+        : null;
+    })
+    .filter(
+      (
+        item
+      ): item is {
+        label: string;
+        value: string;
+      } => !!item
+    )
+    .slice(0, 4);
+}
+
+function compactDashboardPath(value: string): string {
+  const normalized = value.replace(/^\\\\\?\\/, "").replaceAll("\\", "/");
+  const segments = normalized.split("/").filter(Boolean);
+
+  if (segments.length <= 3) {
+    return segments.join("/");
+  }
+
+  return segments.slice(-3).join("/");
+}
+
+function compactDashboardText(
+  value: string | undefined,
+  maxLength = 160
+): string {
+  const normalized = (value ?? "")
+    .replace(/[A-Za-z]:[\\/][^\s)]+/g, (match) => compactDashboardPath(match))
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function formatDashboardSessionSummary(
+  session: Session | null,
+  threads: Thread[],
+  tasks: Task[],
+  events: Event[],
+  fileChanges: FileChange[]
+): string {
+  if (!session) {
+    return "Open Sessions to inspect the next work trace.";
+  }
+
+  const latestEvent = events[0];
+  const latestFileChange = fileChanges[0];
+  const detail = latestFileChange
+    ? `${formatTitleCase(latestFileChange.changeType)} ${compactDashboardPath(
+        latestFileChange.path
+      )}`
+    : latestEvent
+      ? compactDashboardText(latestEvent.summary, 88)
+      : tasks[0]
+        ? compactDashboardText(tasks[0].title, 88)
+        : "No recent work trace recorded.";
+
+  return `${formatTitleCase(session.status)} session · ${pluralize(
+    threads.length,
+    "thread"
+  )} / ${pluralize(fileChanges.length, "file change")}. Latest: ${detail}`;
+}
+
+function formatDashboardFileChangeHeadline(
+  fileChange: FileChange | null | undefined
+): string {
+  if (!fileChange) {
+    return "";
+  }
+
+  return compactDashboardText(
+    `${formatTitleCase(fileChange.changeType)} ${compactDashboardPath(fileChange.path)}`,
+    88
+  );
+}
+
+function getDashboardLeadEvent(events: Event[]): Event | undefined {
+  return (
+    events.find(
+      (event) =>
+        event.category === "work_change" ||
+        event.category === "action" ||
+        event.category === "guidance" ||
+        event.category === "memory"
+    ) ?? events[0]
+  );
 }
 
 function createProjectStackCards(
@@ -694,18 +989,22 @@ function createProjectStackCards(
   state: ShellUiState,
   activeProject: Project | null
 ): ProjectStackCardModel[] {
-  return resolveProjectPool(snapshot, activeProject).map((project) => ({
-    projectId: project.id,
-    name: project.name,
-    description: project.description ?? "Project",
-    summary: project.summary ?? "Project summary pending.",
-    descriptors: project.descriptors,
-    state: getProjectCardState(state, project.id),
-    sessionCount: getProjectSessions(snapshot, project.id).length,
-    guidanceCount: getProjectGuidanceItems(snapshot, project.id).length,
-    actionCount: getProjectActionItems(snapshot, project.id).length,
-    lastTouchedLabel: formatTimestampLabel(project.updatedAt)
-  }));
+  return resolveProjectPool(snapshot, activeProject)
+    .filter((project) =>
+      projectMatchesSearchQuery(project, state.projectSearchQuery)
+    )
+    .map((project) => ({
+      projectId: project.id,
+      name: project.name,
+      description: project.description ?? "Project",
+      summary: project.summary ?? "Project summary pending.",
+      descriptors: project.descriptors,
+      state: getProjectCardState(state, project.id),
+      sessionCount: getProjectSessions(snapshot, project.id).length,
+      guidanceCount: getProjectGuidanceItems(snapshot, project.id).length,
+      actionCount: getProjectActionItems(snapshot, project.id).length,
+      lastTouchedLabel: formatTimestampLabel(project.updatedAt)
+    }));
 }
 
 function createFocusedContextCards(
@@ -719,20 +1018,75 @@ function createFocusedContextCards(
 
   const actions = getProjectActionItems(snapshot, activeProject.id);
   const guidance = getProjectGuidanceItems(snapshot, activeProject.id);
+  const sessions = getProjectSessions(snapshot, activeProject.id);
+  const events = getProjectEvents(snapshot, activeProject.id);
+  const fileChanges = getProjectFileChanges(snapshot, activeProject.id);
+  const memory = getProjectMemoryItems(snapshot, activeProject.id);
+  const leadOpenAction =
+    actions.find((actionItem) =>
+      ["pending", "in_progress", "blocked"].includes(actionItem.state)
+    ) ?? null;
+  const leadGuidance =
+    guidance.find((guidanceItem) => guidanceItem.state === "injected") ??
+    guidance.find((guidanceItem) => guidanceItem.state === "candidate") ??
+    guidance[0] ??
+    null;
+  const leadFileChange = fileChanges[0] ?? null;
+  const leadMemory = memory.find((memoryItem) => memoryItem.isPinned) ?? memory[0] ?? null;
+  const pulseTitle = leadOpenAction
+    ? `${actions.filter((actionItem) =>
+        ["pending", "in_progress", "blocked"].includes(actionItem.state)
+      ).length} open action${actions.filter((actionItem) =>
+        ["pending", "in_progress", "blocked"].includes(actionItem.state)
+      ).length === 1 ? "" : "s"} / ${guidance.length} guidance`
+    : fileChanges.length > 0
+      ? `${pluralize(fileChanges.length, "file change")} / ${pluralize(
+          events.length,
+          "event"
+        )}`
+      : `${actions.length} actions / ${guidance.length} guidance`;
+  const pulseBody = leadOpenAction
+    ? `Top pressure: ${compactDashboardText(
+        leadOpenAction.title,
+        86
+      )}. ${compactDashboardText(leadOpenAction.riskSummary, 88)}`
+    : leadFileChange
+      ? `Latest change: ${formatTitleCase(
+          leadFileChange.changeType
+        )} ${compactDashboardPath(leadFileChange.path)}. Recent trace stays narrowed here.`
+      : leadGuidance
+        ? `Next likely move: ${compactDashboardText(
+            leadGuidance.title,
+            88
+          )}. ${compactDashboardText(leadGuidance.evidenceSummary, 72)}`
+        : `${activeProject.name} is narrowed into a project room with live trace, retained context, and operator control held close.`;
+  const contextBody = leadMemory
+    ? `${compactDashboardText(leadMemory.content, 118)} ${
+        leadMemory.changeSummary
+          ? `Changed: ${compactDashboardText(leadMemory.changeSummary, 52)}`
+          : ""
+      }`.trim()
+    : `${pluralize(sessions.length, "session")} / ${pluralize(
+        events.length,
+        "event"
+      )} tracked inside ${activeProject.name}, with ${pluralize(
+        fileChanges.length,
+        "file change"
+      )} and ${pluralize(actions.length, "action")} currently visible.`;
 
   return [
     createCard(
       "project-pulse",
       "Project Pulse",
-      `${actions.length} actions / ${guidance.length} guidance`,
-      "Focused scope compresses the stack and promotes live project control into the main content area.",
+      pulseTitle,
+      pulseBody,
       "plum"
     ),
     createCard(
       "project-context",
       "Project Context",
       activeProject.name,
-      activeProject.summary ?? "Project context is still being composed.",
+      contextBody || activeProject.summary || "Project context is still being composed.",
       "slate"
     )
   ];
@@ -744,6 +1098,12 @@ function createDashboardView(
   activeProject: Project | null
 ): SubMindShellViewModel["dashboard"] {
   const scope = getShellScope(state);
+  const dashboardMode =
+    scope === "project" ? "focused" : activeProject ? "selected" : "unselected";
+  const actionCheckpoint = createActionCheckpointSummary(
+    snapshot,
+    activeProject?.id ?? null
+  );
   const guidanceCheckpoint = createGuidanceCheckpointSummary(
     snapshot,
     activeProject?.id ?? null
@@ -751,6 +1111,11 @@ function createDashboardView(
   const events = activeProject
     ? getProjectEvents(snapshot, activeProject.id)
     : [...snapshot.events].sort((left, right) => compareStrings(right.timestamp, left.timestamp));
+  const fileChanges = activeProject
+    ? getProjectFileChanges(snapshot, activeProject.id)
+    : [...snapshot.fileChanges].sort((left, right) =>
+        compareStrings(right.updatedAt, left.updatedAt)
+      );
   const actions = activeProject
     ? getProjectActionItems(snapshot, activeProject.id)
     : [...snapshot.actions];
@@ -760,52 +1125,391 @@ function createDashboardView(
   const memory = activeProject
     ? getProjectMemoryItems(snapshot, activeProject.id)
     : getProjectMemoryItems(snapshot, null);
-  const leadEvent = events[0];
+  const sessionPool = resolveSessionPool(snapshot, activeProject);
+  const leadSession = sessionPool[0] ?? null;
+  const leadSessionThreads = leadSession
+    ? getSessionThreads(snapshot, leadSession.id)
+    : [];
+  const leadSessionTasks = leadSession ? getSessionTasks(snapshot, leadSession.id) : [];
+  const leadSessionEvents = leadSession
+    ? snapshot.events
+        .filter((event) => event.sessionId === leadSession.id)
+        .sort((left, right) => compareStrings(right.timestamp, left.timestamp))
+    : [];
+  const leadSessionFileChanges = leadSession
+    ? snapshot.fileChanges
+        .filter((fileChange) => fileChange.sessionId === leadSession.id)
+        .sort((left, right) => compareStrings(right.updatedAt, left.updatedAt))
+    : [];
+  const leadEvent = getDashboardLeadEvent(events);
+  const leadFileChange = fileChanges[0];
   const leadAction = actions[0];
   const leadGuidance = guidance[0];
   const leadMemory = memory[0];
+  const urgentAction =
+    actions.find(
+      (actionItem) =>
+        ["pending", "in_progress", "blocked"].includes(actionItem.state) &&
+        ["high", "critical"].includes(actionItem.riskLevel)
+    ) ??
+    actions.find((actionItem) =>
+      ["pending", "in_progress", "blocked"].includes(actionItem.state)
+    ) ??
+    null;
+  const focusedRecentActivityBody =
+    leadFileChange || leadSession
+      ? [
+          leadFileChange
+            ? `Latest change stayed inside the project room: ${compactDashboardText(
+                leadFileChange.path,
+                56
+              )}.`
+            : null,
+          leadEvent && leadEvent !== leadSessionEvents[0]
+            ? `Trace: ${compactDashboardText(leadEvent.summary, 64)}`
+            : null
+        ]
+          .filter(Boolean)
+          .join(" ")
+      : `${activeProject?.name ?? "This project"} is now the active room, keeping work trace, file changes, and retained context at the center.`;
+  const selectedRecentActivityBody = activeProject
+    ? [
+        `${activeProject.name} is leading the board.`,
+        leadSessionEvents[0]
+          ? `Trace: ${compactDashboardText(leadSessionEvents[0].summary, 66)}`
+          : leadEvent
+            ? `Trace: ${compactDashboardText(leadEvent.summary, 66)}`
+            : null,
+        "Cross-project context remains visible."
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : "Global scope keeps cross-project motion visible while selection magnetizes the active project.";
+  const globalRecentActivityBody = `Cross-project activity is currently tracking ${pluralize(
+    snapshot.events.length,
+    "event"
+  )} across ${pluralize(snapshot.projects.length, "project")}.`;
+  const quietAttentionBody = leadGuidance
+    ? `Next likely move: ${compactDashboardText(
+        leadGuidance.title,
+        64
+      )}. ${compactDashboardText(leadGuidance.evidenceSummary, 48)}`
+    : leadSession
+      ? `${dashboardMode === "focused" ? "Project-room next move" : "Next likely move"}: open Sessions and inspect the latest thread.`
+      : dashboardMode === "focused"
+        ? "No urgent actions are active. Stay in the project room and inspect the latest trace before context drifts."
+        : "No urgent actions are active. Review the latest session trace before leaving the dashboard.";
+  const quietAttentionTitle = leadGuidance
+    ? compactDashboardText(leadGuidance.title, 110)
+    : leadSessionFileChanges[0]
+      ? `Inspect ${compactDashboardPath(leadSessionFileChanges[0].path)}`
+      : dashboardMode === "focused"
+        ? "Project room is clear"
+        : dashboardMode === "selected" && activeProject
+          ? `Review ${activeProject.name}`
+          : "Monitor active projects";
+  const recentSessionTitle = leadSessionFileChanges[0]
+    ? formatDashboardFileChangeHeadline(leadSessionFileChanges[0])
+    : leadSessionThreads[0]
+      ? compactDashboardText(leadSessionThreads[0].title, 72)
+      : leadSessionTasks[0]
+        ? compactDashboardText(leadSessionTasks[0].title, 72)
+        : "Recent session detail";
+  const recentSessionBody = [
+    leadSession
+      ? `${formatTitleCase(leadSession.status)} session centered on ${pluralize(
+          leadSessionThreads.length,
+          "thread"
+        )}.`
+      : "Open Sessions to inspect the next work trace.",
+    leadSessionEvents[0]
+      ? `Trace: ${compactDashboardText(leadSessionEvents[0].summary, 86)}`
+      : null
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const guidanceBody = leadGuidance
+    ? `${compactDashboardText(leadGuidance.summary, 82)} ${compactDashboardText(
+        leadGuidance.evidenceSummary,
+        58
+      )}`.trim()
+    : guidanceCheckpoint.recommendedBody;
+  const memoryBody = leadMemory
+    ? [
+        compactDashboardText(leadMemory.content, 96),
+        leadMemory.changeSummary
+          ? `Changed: ${compactDashboardText(leadMemory.changeSummary, 44)}`
+          : null
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : "Project context and architectural reminders surface here when memory items are available.";
+  const recentActivityFacts = buildFacts(
+    leadSession ? pluralize(leadSessionThreads.length, "thread") : null,
+    leadSession
+      ? pluralize(leadSessionFileChanges.length, "file change")
+      : pluralize(fileChanges.length, "file change"),
+    leadSession
+      ? pluralize(leadSessionEvents.length, "event")
+      : pluralize(events.length, "event"),
+    leadSession ? formatTitleCase(leadSession.status) : null
+  );
+  const attentionFacts = buildFacts(
+    urgentAction ? `${formatTitleCase(urgentAction.riskLevel)} risk` : null,
+    actionCheckpoint.openCount > 0 ? pluralize(actionCheckpoint.openCount, "open action") : null,
+    leadGuidance ? pluralize(leadGuidance.linkedMemoryItemIds.length, "memory link") : null,
+    leadGuidance ? pluralize(leadGuidance.linkedEventIds.length, "event") : null
+  );
+  const recentSessionFacts = buildFacts(
+    pluralize(leadSessionThreads.length, "thread"),
+    pluralize(leadSessionTasks.length, "task"),
+    pluralize(leadSessionFileChanges.length, "file change"),
+    leadSession ? formatTitleCase(leadSession.status) : null
+  );
+  const guidanceFacts = buildFacts(
+    leadGuidance ? pluralize(leadGuidance.linkedMemoryItemIds.length, "memory link") : null,
+    leadGuidance ? pluralize(leadGuidance.linkedEventIds.length, "event") : null,
+    leadGuidance ? pluralize(leadGuidance.linkedActionItemIds.length, "action link") : null,
+    leadGuidance ? formatTitleCase(leadGuidance.state) : null
+  );
+  const memoryFacts = buildFacts(
+    leadMemory ? formatTitleCase(leadMemory.status) : null,
+    leadMemory ? pluralize(leadMemory.sourceEventIds.length, "event") : null,
+    leadMemory ? pluralize(leadMemory.sourceFileChangeIds.length, "file change") : null,
+    leadMemory ? pluralize(leadMemory.linkedGuidanceItemIds.length, "guidance link") : null
+  );
+  const recentActivityDetails = buildDetailItems(
+    leadSession
+      ? {
+          label: "Session",
+          value: `${formatTitleCase(leadSession.status)} / ${pluralize(
+            leadSessionThreads.length,
+            "thread"
+          )} / ${pluralize(leadSessionFileChanges.length, "file change")}`
+        }
+      : activeProject
+        ? {
+            label: "Scope",
+            value: `${activeProject.name} / ${pluralize(
+              fileChanges.length,
+              "file change"
+            )} / ${pluralize(events.length, "event")}`
+          }
+        : {
+            label: "Scope",
+            value: `${pluralize(snapshot.projects.length, "project")} / ${pluralize(
+              events.length,
+              "event"
+            )}`
+          },
+    leadFileChange
+      ? {
+          label: "Latest file",
+          value: `${formatTitleCase(leadFileChange.changeType)} ${compactDashboardPath(
+            leadFileChange.path
+          )}`
+        }
+      : null,
+    leadSessionEvents[0]
+      ? {
+          label: "Latest event",
+          value: leadSessionEvents[0].summary
+        }
+      : leadEvent
+        ? {
+            label: "Latest event",
+            value: leadEvent.summary
+          }
+        : null
+  );
+  const attentionDetails = buildDetailItems(
+    urgentAction
+      ? {
+          label: "Action",
+          value: `${formatTitleCase(urgentAction.state)} / ${formatTitleCase(
+            urgentAction.riskLevel
+          )} risk / ${urgentAction.owner}`
+        }
+      : {
+          label: "Pressure",
+          value:
+            actionCheckpoint.openCount > 0
+              ? `${pluralize(actionCheckpoint.openCount, "open action")} still visible`
+              : "No blocked or high-risk action is currently active."
+        },
+    leadGuidance
+      ? {
+          label: "Guidance",
+          value: leadGuidance.title
+        }
+      : null,
+    urgentAction
+      ? {
+          label: "Why now",
+          value: urgentAction.riskSummary
+        }
+      : leadSessionEvents[0]
+        ? {
+            label: "Latest trace",
+            value: leadSessionEvents[0].summary
+          }
+        : null
+  );
+  const recentSessionDetails = buildDetailItems(
+    leadSession
+      ? {
+          label: "Session",
+          value: `${formatTitleCase(leadSession.status)} / ${pluralize(
+            leadSessionThreads.length,
+            "thread"
+          )} / ${pluralize(leadSessionTasks.length, "task")}`
+        }
+      : null,
+    leadSessionThreads[0]
+      ? {
+          label: "Thread",
+          value: leadSessionThreads[0].title
+        }
+      : leadSessionTasks[0]
+        ? {
+            label: "Task",
+            value: leadSessionTasks[0].title
+          }
+        : null,
+    leadSessionFileChanges[0]
+      ? {
+          label: "Latest file",
+          value: `${formatTitleCase(
+            leadSessionFileChanges[0].changeType
+          )} ${compactDashboardPath(leadSessionFileChanges[0].path)}`
+        }
+      : leadSessionEvents[0]
+        ? {
+            label: "Latest event",
+            value: leadSessionEvents[0].summary
+          }
+        : null
+  );
+  const guidanceDetails = buildDetailItems(
+    leadGuidance
+      ? {
+          label: "State",
+          value: `${formatTitleCase(leadGuidance.state)} / ${formatTitleCase(
+            leadGuidance.source
+          )}`
+        }
+      : {
+          label: "Checkpoint",
+          value: guidanceCheckpoint.recommendedTitle
+        },
+    leadGuidance
+      ? {
+          label: "Evidence",
+          value: leadGuidance.evidenceSummary
+        }
+      : {
+          label: "Reasoning",
+          value: guidanceCheckpoint.recommendedBody
+        },
+    leadGuidance
+      ? {
+          label: "Links",
+          value: `${pluralize(
+            leadGuidance.linkedMemoryItemIds.length,
+            "memory link"
+          )} / ${pluralize(leadGuidance.linkedEventIds.length, "event")}`
+        }
+      : null
+  );
+  const memoryDetails = buildDetailItems(
+    leadMemory
+      ? {
+          label: "Status",
+          value: `${formatTitleCase(leadMemory.status)} / ${Math.round(
+            leadMemory.confidence * 100
+          )}% confidence`
+        }
+      : null,
+    leadMemory
+      ? {
+          label: "Provenance",
+          value: `${pluralize(
+            leadMemory.sourceEventIds.length,
+            "event"
+          )} / ${pluralize(leadMemory.sourceFileChangeIds.length, "file change")}`
+        }
+      : null,
+    leadMemory?.changeSummary
+      ? {
+          label: "Changed",
+          value: leadMemory.changeSummary
+        }
+      : null
+  );
 
   return {
     recentActivity: createCard(
       "dashboard-activity",
       "Recent Activity",
-      leadEvent?.summary ?? "No recent activity",
+      leadFileChange
+        ? formatDashboardFileChangeHeadline(leadFileChange)
+        : compactDashboardText(leadEvent?.summary, 98) || "No recent activity",
       scope === "project"
-        ? "Focused scope keeps the active project’s work trace, file changes, and current session at the center."
-        : "Global scope keeps cross-project motion visible while selection magnetizes the active project.",
-      "violet"
+        ? focusedRecentActivityBody
+        : activeProject
+          ? selectedRecentActivityBody
+          : globalRecentActivityBody,
+      "violet",
+      recentActivityFacts,
+      recentActivityDetails
     ),
     needsAttention: createCard(
       "dashboard-attention",
       "Needs Attention",
-      leadAction?.title ?? "No urgent actions",
-      leadAction?.riskSummary ??
-        "Action pressure is currently low across the active surface.",
-      leadAction ? "amber" : "slate"
+      urgentAction
+        ? compactDashboardText(urgentAction.title, 110)
+        : actionCheckpoint.openCount > 0
+          ? `${actionCheckpoint.openCount} actions still open`
+          : quietAttentionTitle,
+      urgentAction
+        ? `${compactDashboardText(
+            urgentAction.riskSummary,
+            140
+          )} Next move: ${formatTitleCase(urgentAction.state)} action owned by ${
+            urgentAction.owner
+          }.`
+        : quietAttentionBody,
+      urgentAction ? "amber" : "slate",
+      attentionFacts,
+      attentionDetails
     ),
     deepeningCards: [
       createCard(
         "dashboard-session",
         "Recent Session",
-        getProjectSessions(snapshot, activeProject?.id ?? "project-submind")[0]?.summary ??
-          "Session detail will appear once a project is active.",
-        "Dashboard lower deepening is the story engine: recent session shape, context, and likely next move.",
-        "plum"
+        recentSessionTitle,
+        recentSessionBody,
+        "plum",
+        recentSessionFacts,
+        recentSessionDetails
       ),
       createCard(
         "dashboard-guidance",
         "Guidance Snapshot",
         leadGuidance?.title ?? guidanceCheckpoint.recommendedTitle,
-        leadGuidance?.summary ?? guidanceCheckpoint.recommendedBody,
-        guidanceCheckpoint.highRiskActionCount > 0 ? "amber" : "violet"
+        guidanceBody,
+        guidanceCheckpoint.highRiskActionCount > 0 ? "amber" : "violet",
+        guidanceFacts,
+        guidanceDetails
       ),
       createCard(
         "dashboard-memory",
         "Architecture / Memory",
         leadMemory?.summary ?? "No pinned memory",
-        leadMemory?.content ??
-          "Project context and architectural reminders surface here when memory items are available.",
-        "slate"
+        memoryBody,
+        "slate",
+        memoryFacts,
+        memoryDetails
       )
     ]
   };
@@ -1096,6 +1800,9 @@ function createSessionsView(
     ...linkedGuidanceContext,
     ...linkedMemoryContext
   ];
+  const sessionEvents = activeSessionRecord
+    ? snapshot.events.filter((event) => event.sessionId === activeSessionRecord.id)
+    : [];
   const threads = activeSessionThreads.map((thread) => {
     const threadTasks = activeSessionTasks.filter((task) => task.threadId === thread.id);
     const threadEvents = snapshot.events.filter((event) => event.threadId === thread.id);
@@ -1107,6 +1814,7 @@ function createSessionsView(
       threadId: thread.id,
       title: thread.title,
       summary: thread.summary ?? "No thread summary recorded.",
+      sourceLabel: resolveThreadSourceLabel(threadEvents, sessionEvents),
       status: thread.status,
       updatedAtLabel: formatTimestampLabel(thread.updatedAt),
       taskCount: threadTasks.length,
@@ -1143,7 +1851,7 @@ function createSessionsView(
     linkedContext,
     inspector: createCard(
       "sessions-inspector",
-      "Session Trace Overview",
+      "Activity Graph / Work Trace",
       activeSession?.title ?? "Select a session",
       activeSessionRecord
         ? `${activeSessionRecord.summary ?? "No summary."} ${focusDescription} ${pluralize(
@@ -1746,6 +2454,25 @@ function getActionTone(actionItem: ActionItem | undefined): ShellCardModel["tone
   return "slate";
 }
 
+function getActionQueueRank(actionItem: ActionItem): number {
+  switch (actionItem.state) {
+    case "pending":
+      return 0;
+    case "in_progress":
+      return 1;
+    case "blocked":
+      return 2;
+    case "approved":
+      return 3;
+    case "rejected":
+      return 4;
+    case "resolved":
+      return 5;
+    default:
+      return 6;
+  }
+}
+
 function getActionTransitionControls(
   actionItem: ActionItem | undefined,
   isMutationPending: boolean
@@ -1844,12 +2571,21 @@ function createActionsView(
     snapshot,
     activeProject?.id ?? null
   );
-  const actionsPool = activeProject
+  const actionsPool = (activeProject
     ? [
         ...getProjectActionItems(snapshot, activeProject.id),
         ...snapshot.actions.filter((actionItem) => actionItem.projectId !== activeProject.id)
       ]
-    : [...snapshot.actions];
+    : [...snapshot.actions]
+  ).sort((left, right) => {
+    const rankDelta = getActionQueueRank(left) - getActionQueueRank(right);
+
+    if (rankDelta !== 0) {
+      return rankDelta;
+    }
+
+    return compareStrings(right.updatedAt, left.updatedAt);
+  });
 
   const cards = actionsPool.map((actionItem) => {
     const relatedGuidance = getActionGuidanceItems(snapshot, actionItem);
@@ -2015,24 +2751,73 @@ function createActionsView(
   };
 }
 
+function createProtectedShellSnapshot(
+  snapshot: SubMindStoreSnapshot,
+  state: ShellUiState
+): SubMindStoreSnapshot {
+  return redactSensitiveObject(snapshot, {
+    revealFingerprints: state.secretRevealTarget
+      ? [state.secretRevealTarget.fingerprint]
+      : []
+  });
+}
+
+function createSecretProtectionModel(
+  state: ShellUiState
+): SecretProtectionModel {
+  return {
+    target: state.secretRevealTarget,
+    label: state.secretRevealTarget?.label ?? "No selected secret",
+    canReveal: false,
+    isRevealing: !!state.secretRevealTarget,
+    redactionCount: 0,
+    kindLabels: state.secretRevealTarget ? [state.secretRevealTarget.label] : [],
+    autoHideMs: 30_000
+  };
+}
+
+function createProjectSearchResultLabel(
+  filteredCount: number,
+  totalCount: number,
+  isFiltering: boolean
+): string {
+  if (!isFiltering) {
+    return `${totalCount} projects`;
+  }
+
+  return filteredCount === 1
+    ? `1 of ${totalCount} project`
+    : `${filteredCount} of ${totalCount} projects`;
+}
+
 export function createShellViewModel(
   snapshot: SubMindStoreSnapshot,
   state: ShellUiState,
   options: ShellViewModelOptions = {}
 ): SubMindShellViewModel {
-  const activeProject = getProjectById(snapshot, getActiveProjectId(state) ?? "");
+  const secretProtection = createSecretProtectionModel(state);
+  const viewSnapshot = createProtectedShellSnapshot(snapshot, state);
+  const viewOptions = redactSensitiveObject(options, {
+    revealFingerprints: state.secretRevealTarget
+      ? [state.secretRevealTarget.fingerprint]
+      : []
+  });
+  const activeProject = getProjectById(viewSnapshot, getActiveProjectId(state) ?? "");
   const scope = getShellScope(state);
   const projectStackCards = createProjectStackCards(
-    snapshot,
+    viewSnapshot,
     state,
     activeProject
   );
+  const projectSearchQuery = state.projectSearchQuery.trim();
+  const isProjectFiltering = projectSearchQuery.length > 0;
 
   return {
     layoutMode: state.layoutMode,
     primaryScreen: state.primaryScreen,
     scope,
     activeProject,
+    secretProtection,
     commandStrip: {
       title: "SubMind",
       subtitle:
@@ -2041,9 +2826,25 @@ export function createShellViewModel(
           : "Global operator console with project-aware scope and active context.",
       metrics: [
         { label: "Scope", value: scope === "project" ? "project-focused" : "global" },
-        { label: "Projects", value: String(snapshot.projects.length) },
+        { label: "Projects", value: String(viewSnapshot.projects.length) },
         { label: "Screen", value: state.primaryScreen },
-        { label: "Active", value: activeProject?.name ?? "none" }
+        activeProject
+          ? {
+              label: "Active",
+              value: activeProject.name,
+              action: state.focusedProjectId
+                ? {
+                    kind: "clear-focus",
+                    label: "Exit",
+                    value: "Focus"
+                  }
+                : {
+                    kind: "clear-selection",
+                    label: "Clear",
+                    value: "Selection"
+                  }
+            }
+          : { label: "Active", value: "none" }
       ],
       layoutModes: layoutModes.map((layoutMode) => ({
         id: layoutMode,
@@ -2061,8 +2862,20 @@ export function createShellViewModel(
       body:
         activeProject?.summary ??
         "Single click selects a project, clicking it again clears it, and double click focuses or unfocuses it.",
+      search: {
+        query: state.projectSearchQuery,
+        placeholder: "Search projects",
+        resultLabel: createProjectSearchResultLabel(
+          projectStackCards.length,
+          viewSnapshot.projects.length,
+          isProjectFiltering
+        ),
+        filteredCount: projectStackCards.length,
+        totalCount: viewSnapshot.projects.length,
+        isFiltering: isProjectFiltering
+      },
       cards: projectStackCards,
-      focusedContextCards: createFocusedContextCards(snapshot, activeProject, state)
+      focusedContextCards: createFocusedContextCards(viewSnapshot, activeProject, state)
     },
     contentHeader: {
       eyebrow:
@@ -2080,9 +2893,9 @@ export function createShellViewModel(
       }[state.primaryScreen],
       description:
         activeProject && scope === "global"
-          ? "Global context stays visible, but the selected project gets a stronger center of gravity."
+          ? `${activeProject.name} is now magnetized: its trace, guidance, and recent changes are weighted above the wider board while the rest of the world stays visible.`
           : scope === "project"
-            ? "Main content is narrowed to the focused project while the stack remains visible."
+            ? `${activeProject?.name ?? "This project"} is now the active project room: work trace, retained context, and control are narrowed here while the stack stays visible around the room.`
             : "Cross-project command center with no single project dominating the main content area.",
       screens: primaryScreens.map((screen) => ({
         id: screen,
@@ -2090,10 +2903,10 @@ export function createShellViewModel(
         isActive: state.primaryScreen === screen
       }))
     },
-    dashboard: createDashboardView(snapshot, state, activeProject),
-    sessions: createSessionsView(snapshot, state, activeProject),
-    memory: createMemoryView(snapshot, state, activeProject, options),
-    guidance: createGuidanceView(snapshot, state, activeProject),
-    actions: createActionsView(snapshot, state, activeProject, options)
+    dashboard: createDashboardView(viewSnapshot, state, activeProject),
+    sessions: createSessionsView(viewSnapshot, state, activeProject),
+    memory: createMemoryView(viewSnapshot, state, activeProject, viewOptions),
+    guidance: createGuidanceView(viewSnapshot, state, activeProject),
+    actions: createActionsView(viewSnapshot, state, activeProject, viewOptions)
   };
 }

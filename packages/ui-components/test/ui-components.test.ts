@@ -9,6 +9,7 @@ import {
   createShellViewModel,
   selectShellAction,
   selectShellGuidance,
+  selectShellMemory,
   setShellPrimaryScreen,
   toggleShellProjectFocus
 } from "../../ui-state/src/index";
@@ -30,6 +31,9 @@ describe("ui-components", () => {
     onFocusSelectedProject: () => undefined,
     onClearProjectSelection: () => undefined,
     onClearProjectFocus: () => undefined,
+    onProjectSearchChange: () => undefined,
+    onRevealSecretTarget: () => undefined,
+    onHideSecretTarget: () => undefined,
     onSelectSession: () => undefined,
     onSelectThread: () => undefined,
     onSelectMemory: () => undefined,
@@ -65,6 +69,8 @@ describe("ui-components", () => {
     expect(markup).toContain("Magnetized");
     expect(markup).toContain("Focus");
     expect(markup).toContain("sm-project-card__identity");
+    expect(markup).toContain('aria-label="Search projects"');
+    expect(markup).toContain("3 projects");
     expect(markup).not.toContain(">Unfocus<");
   });
 
@@ -107,6 +113,10 @@ describe("ui-components", () => {
     );
 
     expect(markup).toContain("Action Checkpoint");
+    expect(markup).toContain("sm-actions-shell");
+    expect(markup).toContain("sm-action-queue");
+    expect(markup).toContain("sm-action-main-stack");
+    expect(markup).toContain("sm-action-audit-stack");
     expect(markup).toContain("Action Main View");
     expect(markup).toContain("Audit / Context Inspector");
     expect(markup).toContain("Approve schema realignment for Project, Event, and ActionItem");
@@ -137,11 +147,15 @@ describe("ui-components", () => {
       })
     );
 
-    expect(markup).toContain("Session Navigator");
+    expect(markup).toContain("Work Navigator");
+    expect(markup).toContain("sm-work-navigator");
     expect(markup).toContain("Threads");
-    expect(markup).toContain("Event Sequence");
+    expect(markup).toContain("sm-status-pill--origin-codex");
+    expect(markup).toContain("Activity Graph / Work Trace");
+    expect(markup).toContain("sm-work-trace-stack");
     expect(markup).toContain("File Changes");
-    expect(markup).toContain("Linked Context");
+    expect(markup).toContain("Context Inspector");
+    expect(markup).toContain("sm-context-inspector-stack");
     expect(markup).toContain("Open Guidance");
   });
 
@@ -165,6 +179,10 @@ describe("ui-components", () => {
     );
 
     expect(markup).toContain("Guidance Checkpoint");
+    expect(markup).toContain("sm-guidance-shell");
+    expect(markup).toContain("Guidance Feed");
+    expect(markup).toContain("Injected Guidance Main View");
+    expect(markup).toContain("Tuning / Decision Inspector");
     expect(markup).toContain("memory ref");
     expect(markup).toContain("related action");
     expect(markup).toContain("Decision Inspector");
@@ -199,6 +217,42 @@ describe("ui-components", () => {
     expect(markup).toContain("What Changed");
     expect(markup).toContain("Confirm Memory");
     expect(markup).toContain("Saving...");
+  });
+
+  it("renders inline redaction reveal affordances without exposing hidden data by default", () => {
+    const secret = "sm_MEMORYTOKENabcdefghijklmnopqrstuvwxyz123456";
+    const baseSnapshot = createPreviewStoreSnapshot();
+    const snapshot = {
+      ...baseSnapshot,
+      memory: baseSnapshot.memory.map((memoryItem) =>
+        memoryItem.id === "memory-submind-architecture"
+          ? {
+              ...memoryItem,
+              content: `${memoryItem.content} Hidden token ${secret}.`
+            }
+          : memoryItem
+      )
+    };
+    const state = setShellPrimaryScreen(
+      selectShellMemory(
+        createInitialShellUiState(snapshot),
+        "memory-submind-architecture"
+      ),
+      "memory"
+    );
+    const markup = renderToStaticMarkup(
+      createElement(SubMindShell, {
+        viewModel: createShellViewModel(snapshot, state),
+        actions: noopActions
+      })
+    );
+
+    expect(markup).toContain("sm-redacted-secret");
+    expect(markup).toContain("sm-redacted-secret__bubble");
+    expect(markup).toContain("Reveal all visible submind token occurrences");
+    expect(markup).toContain("[redacted:");
+    expect(markup).not.toContain(secret);
+    expect(markup).not.toContain("Reveal Hidden Data");
   });
 
   it("renders a dedicated operator shell with a left rail and right workspace", () => {

@@ -12,12 +12,14 @@ import {
   focusSelectedShellProject,
   getProjectCardState,
   getShellScope,
+  revealShellSecretTarget,
   selectShellAction,
   selectShellGuidance,
   selectShellMemory,
   selectShellProject,
   selectShellSession,
   selectShellThread,
+  setShellProjectSearchQuery,
   setShellPrimaryScreen,
   toggleShellProjectFocus
 } from "../src/index";
@@ -54,6 +56,22 @@ describe("ui-state", () => {
     expect(clearedFocus.selectedProjectId).toBe("project-atlas");
     expect(clearedFocus.focusedProjectId).toBeNull();
     expect(clearedSelection.selectedProjectId).toBeNull();
+  });
+
+  it("filters the project stack by project search without changing scope", () => {
+    const snapshot = createPreviewStoreSnapshot();
+    const state = setShellProjectSearchQuery(
+      createInitialShellUiState(snapshot),
+      "ledger"
+    );
+    const viewModel = createShellViewModel(snapshot, state);
+
+    expect(viewModel.scope).toBe("global");
+    expect(viewModel.activeProject?.id).toBe("project-submind");
+    expect(viewModel.projectStack.search.isFiltering).toBe(true);
+    expect(viewModel.projectStack.search.resultLabel).toBe("1 of 3 project");
+    expect(viewModel.projectStack.cards).toHaveLength(1);
+    expect(viewModel.projectStack.cards[0]?.name).toBe("Memory Ledger");
   });
 
   it("tracks screen and detail selections across sessions, memory, guidance, and actions", () => {
@@ -131,6 +149,7 @@ describe("ui-state", () => {
     expect(viewModel.sessions.activeSessionId).toBe("session-submind-current");
     expect(viewModel.sessions.activeThreadId).toBe("thread-submind-migration");
     expect(viewModel.sessions.threads[0]?.title).toContain("Stack migration");
+    expect(viewModel.sessions.threads[0]?.sourceLabel).toBe("Codex");
     expect(viewModel.sessions.tasks[0]?.title).toContain("Move the shell to React");
     expect(viewModel.sessions.traceItems[0]?.originLabel).toBe("Submind");
     expect(viewModel.sessions.traceItems[1]?.fileChangeLabel).toContain("file change");
@@ -143,6 +162,89 @@ describe("ui-state", () => {
     expect(viewModel.sessions.linkedContext[0]?.kind).toBe("action");
     expect(viewModel.sessions.linkedContext[1]?.kind).toBe("guidance");
     expect(viewModel.sessions.linkedContext[2]?.kind).toBe("memory");
+  });
+
+  it("derives explicit thread source labels for Codex and Copilot threads", () => {
+    const baseSnapshot = createPreviewStoreSnapshot();
+    const snapshot = {
+      ...baseSnapshot,
+      sessions: [
+        ...baseSnapshot.sessions,
+        {
+          kind: "Session" as const,
+          id: "session-copilot-review",
+          profileId: "profile-operator",
+          projectId: "project-submind",
+          status: "active" as const,
+          summary: "Copilot-assisted review of operator shell polish.",
+          startedAt: "2026-03-30T10:05:00.000Z",
+          createdAt: "2026-03-30T10:05:00.000Z",
+          updatedAt: "2026-03-30T10:12:00.000Z"
+        }
+      ],
+      threads: [
+        ...baseSnapshot.threads,
+        {
+          kind: "Thread" as const,
+          id: "thread-copilot-review",
+          sessionId: "session-copilot-review",
+          projectId: "project-submind",
+          title: "Copilot shell polish review",
+          status: "open" as const,
+          summary: "Use Copilot chat to inspect shell density and polish.",
+          createdAt: "2026-03-30T10:05:00.000Z",
+          updatedAt: "2026-03-30T10:12:00.000Z"
+        }
+      ],
+      events: [
+        ...baseSnapshot.events,
+        {
+          kind: "Event" as const,
+          id: "event-copilot-session-opened",
+          projectId: "project-submind",
+          sessionId: "session-copilot-review",
+          threadId: "thread-copilot-review",
+          originType: "system" as const,
+          eventType: "copilot_session_opened",
+          category: "lifecycle" as const,
+          nodeCategory: "anchor" as const,
+          timestamp: "2026-03-30T10:05:00.000Z",
+          summary: "Opened GitHub Copilot chat for shell polish review.",
+          metadata: {
+            source: "copilot"
+          },
+          createdAt: "2026-03-30T10:05:00.000Z",
+          updatedAt: "2026-03-30T10:05:00.000Z"
+        }
+      ]
+    };
+
+    const codexViewModel = createShellViewModel(
+      snapshot,
+      setShellPrimaryScreen(
+        selectShellSession(createInitialShellUiState(snapshot), "session-submind-current"),
+        "sessions"
+      )
+    );
+    const copilotViewModel = createShellViewModel(
+      snapshot,
+      setShellPrimaryScreen(
+        selectShellSession(createInitialShellUiState(snapshot), "session-copilot-review"),
+        "sessions"
+      )
+    );
+
+    expect(
+      codexViewModel.sessions.threads.find(
+        (thread) => thread.threadId === "thread-submind-migration"
+      )?.sourceLabel
+    ).toBe("Codex");
+    expect(
+      codexViewModel.sessions.threads.find(
+        (thread) => thread.threadId === "thread-submind-native"
+      )?.sourceLabel
+    ).toBe("Codex");
+    expect(copilotViewModel.sessions.threads[0]?.sourceLabel).toBe("Copilot");
   });
 
   it("derives action controls, draft outcome, and action history for the live action loop", async () => {
@@ -220,5 +322,70 @@ describe("ui-state", () => {
     expect(viewModel.guidance.inspector.historyItems[0]?.summary).toContain(
       "Renderer migration"
     );
+  });
+
+  it("redacts protected values by default and only reveals the selected visible fingerprint temporarily", () => {
+    const memorySecret = "sm_MEMORYTOKENabcdefghijklmnopqrstuvwxyz123456";
+    const eventSecret = "sm_EVENTTOKENabcdefghijklmnopqrstuvwxyz123456";
+    const baseSnapshot = createPreviewStoreSnapshot();
+    const snapshot = {
+      ...baseSnapshot,
+      memory: baseSnapshot.memory.map((memoryItem) =>
+        memoryItem.id === "memory-submind-architecture"
+          ? {
+              ...memoryItem,
+              content: `${memoryItem.content} Captured token ${memorySecret}.`
+            }
+          : memoryItem
+      ),
+      events: baseSnapshot.events.map((event) =>
+        event.id === "event-submind-shell"
+          ? {
+              ...event,
+              summary: `${event.summary} Hidden event token ${eventSecret}.`
+            }
+          : event
+      )
+    };
+    const state = setShellPrimaryScreen(
+      selectShellMemory(
+        createInitialShellUiState(snapshot),
+        "memory-submind-architecture"
+      ),
+      "memory"
+    );
+    const hiddenViewModel = createShellViewModel(snapshot, state, {
+      memoryContentDraft:
+        snapshot.memory.find((memoryItem) => memoryItem.id === "memory-submind-architecture")
+          ?.content ?? ""
+    });
+    const hiddenJson = JSON.stringify(hiddenViewModel);
+    const redactionMatch = hiddenViewModel.memory.inspector.content.match(
+      /\[redacted:([^:\]\s]+):([a-f0-9]{8})\]/i
+    );
+    const revealTarget = redactionMatch
+      ? { label: redactionMatch[1]!, fingerprint: redactionMatch[2]! }
+      : null;
+
+    expect(hiddenViewModel.secretProtection.canReveal).toBe(false);
+    expect(hiddenJson).not.toContain(memorySecret);
+    expect(hiddenJson).not.toContain(eventSecret);
+    expect(hiddenJson).toContain("[redacted:");
+    expect(revealTarget).not.toBeNull();
+
+    const revealedViewModel = createShellViewModel(
+      snapshot,
+      revealTarget ? revealShellSecretTarget(state, revealTarget) : state,
+      {
+        memoryContentDraft:
+          snapshot.memory.find((memoryItem) => memoryItem.id === "memory-submind-architecture")
+            ?.content ?? ""
+      }
+    );
+
+    expect(revealedViewModel.secretProtection.isRevealing).toBe(true);
+    expect(revealedViewModel.memory.inspector.content).toContain(memorySecret);
+    expect(revealedViewModel.memory.draftContent).toContain(memorySecret);
+    expect(JSON.stringify(revealedViewModel)).not.toContain(eventSecret);
   });
 });
