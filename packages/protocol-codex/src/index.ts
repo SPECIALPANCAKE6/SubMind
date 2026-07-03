@@ -1,12 +1,16 @@
-import type {
-  Event,
-  FileChange,
-  ISODateString,
-  Profile,
-  Project,
-  Session,
-  Task,
-  Thread
+import {
+  createProjectGroupingKey,
+  createProjectIdFromWorkspacePath,
+  getWorkspaceBaseName,
+  normalizeWorkspacePath,
+  type Event,
+  type FileChange,
+  type ISODateString,
+  type Profile,
+  type Project,
+  type Session,
+  type Task,
+  type Thread
 } from "@submind/shared-schemas";
 import type { SubMindStoreSnapshot } from "@submind/store";
 
@@ -73,28 +77,13 @@ export interface CodexRuntimeFeed {
 }
 
 interface RuntimeProjectBucket {
-  cwd: string;
+  workspacePath: string;
+  key: string;
   id: string;
   threads: CodexRuntimeThreadRecord[];
 }
 
 const millisecondsPerHour = 60 * 60 * 1000;
-
-function sanitizePath(value: string): string {
-  return value.replace(/^\\\\\?\\/, "").replaceAll("\\", "/");
-}
-
-function getPathSegments(value: string): string[] {
-  return sanitizePath(value)
-    .split("/")
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-}
-
-function getPathBaseName(value: string): string {
-  const segments = getPathSegments(value);
-  return segments[segments.length - 1] ?? "Workspace";
-}
 
 function truncateText(value: string, maxLength: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -105,29 +94,8 @@ function truncateText(value: string, maxLength: number): string {
 
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
-
-function createSlug(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48);
-}
-
-function createStableHash(value: string): string {
-  let hash = 2166136261;
-
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-
-  return (hash >>> 0).toString(36);
-}
-
 function createProjectId(cwd: string): string {
-  const baseName = createSlug(getPathBaseName(cwd)) || "workspace";
-  return `project-${baseName}-${createStableHash(sanitizePath(cwd))}`;
+  return createProjectIdFromWorkspacePath(cwd);
 }
 
 function createSessionId(threadId: string): string {
@@ -318,24 +286,26 @@ function groupThreadsByProject(
   const buckets = new Map<string, RuntimeProjectBucket>();
 
   for (const thread of threads) {
-    const cwd = sanitizePath(thread.cwd);
-    const existingBucket = buckets.get(cwd);
+    const workspacePath = normalizeWorkspacePath(thread.cwd);
+    const projectKey = createProjectGroupingKey(workspacePath);
+    const existingBucket = buckets.get(projectKey);
 
     if (existingBucket) {
       existingBucket.threads.push({
         ...thread,
-        cwd
+        cwd: workspacePath
       });
       continue;
     }
 
-    buckets.set(cwd, {
-      cwd,
-      id: createProjectId(cwd),
+    buckets.set(projectKey, {
+      workspacePath,
+      key: projectKey,
+      id: createProjectId(workspacePath),
       threads: [
         {
           ...thread,
-          cwd
+          cwd: workspacePath
         }
       ]
     });
@@ -375,13 +345,13 @@ function buildProjectEntities(
       kind: "Project",
       id: bucket.id,
       profileId,
-      name: getPathBaseName(bucket.cwd),
+      name: getWorkspaceBaseName(bucket.workspacePath),
       description: createProjectDescription(newestThread, descriptorHints),
       summary: summarizeMessage(
         newestThread.firstUserMessage,
         newestThread.title || "Codex-tracked project activity."
       ),
-      workspacePath: bucket.cwd,
+      workspacePath: bucket.workspacePath,
       ...(newestThread.gitOriginUrl
         ? { repositoryRemote: newestThread.gitOriginUrl }
         : {}),
@@ -404,7 +374,9 @@ function buildSessionEntities(
       kind: "Session",
       id: createSessionId(thread.id),
       profileId,
-      projectId: projectIdByCwd.get(sanitizePath(thread.cwd)) ?? "unknown-project",
+      projectId:
+        projectIdByCwd.get(createProjectGroupingKey(thread.cwd)) ??
+        "unknown-project",
       status: resolveSessionStatus(thread, now),
       summary: summarizeMessage(
         thread.firstUserMessage,
@@ -430,8 +402,10 @@ function buildThreadEntities(
       kind: "Thread",
       id: createThreadEntityId(thread.id),
       sessionId: createSessionId(thread.id),
-      projectId: projectIdByCwd.get(sanitizePath(thread.cwd)) ?? "unknown-project",
-      title: thread.title || getPathBaseName(thread.cwd),
+      projectId:
+        projectIdByCwd.get(createProjectGroupingKey(thread.cwd)) ??
+        "unknown-project",
+      title: thread.title || getWorkspaceBaseName(thread.cwd),
       status: resolveThreadStatus(thread, now),
       summary: summarizeMessage(
         thread.firstUserMessage,
@@ -457,7 +431,9 @@ function buildTaskEntities(
         id: createTaskId(thread.id),
         sessionId: createSessionId(thread.id),
         threadId: createThreadEntityId(thread.id),
-        projectId: projectIdByCwd.get(sanitizePath(thread.cwd)) ?? "unknown-project",
+        projectId:
+          projectIdByCwd.get(createProjectGroupingKey(thread.cwd)) ??
+          "unknown-project",
         title: thread.title || "Codex task",
         status: resolveTaskStatus(threadStatus),
         priority: resolveTaskPriority(thread, now),
@@ -525,7 +501,7 @@ function buildEventEntities(
         return null;
       }
 
-      const projectId = projectIdByCwd.get(sanitizePath(thread.cwd));
+      const projectId = projectIdByCwd.get(createProjectGroupingKey(thread.cwd));
 
       if (!projectId) {
         return null;
@@ -551,7 +527,7 @@ function buildFileChangeEntities(
         return null;
       }
 
-      const projectId = projectIdByCwd.get(sanitizePath(thread.cwd));
+      const projectId = projectIdByCwd.get(createProjectGroupingKey(thread.cwd));
       const event = eventsById.get(fileChange.eventId);
       const threadEntity = threadsByEntityId.get(createThreadEntityId(thread.id));
 
@@ -593,7 +569,7 @@ export function createStoreSnapshotFromCodexRuntimeFeed(
   const projectBuckets = groupThreadsByProject(threads);
   const profileId = "profile-local-operator";
   const projectIdByCwd = new Map(
-    projectBuckets.map((bucket) => [bucket.cwd, bucket.id])
+    projectBuckets.map((bucket) => [bucket.key, bucket.id])
   );
   const projects = buildProjectEntities(projectBuckets, profileId);
   const sessions = buildSessionEntities(threads, projectIdByCwd, profileId, now);

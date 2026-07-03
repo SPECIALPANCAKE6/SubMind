@@ -10,10 +10,10 @@
   ],
   "references": [
     {
-      "path": "../policy"
+      "path": "../shared-schemas"
     },
     {
-      "path": "../shared-schemas"
+      "path": "../store"
     }
   ]
 }

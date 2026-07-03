@@ -1,15 +1,20 @@
 import type {
   ActionItem,
+  ExternalProjectExport,
+  ExternalProjectSummary,
   Event,
   FileChange,
   GuidanceItem,
   MemoryItem,
   Profile,
+  ProjectCollectionCounts,
   Project,
   Session,
   Task,
   Thread
 } from "@submind/shared-schemas";
+import { subMindExternalApiVersion } from "@submind/shared-schemas";
+import { redactSensitiveObject, redactSensitiveText } from "@submind/policy";
 
 export * from "./schema.js";
 
@@ -67,8 +72,21 @@ export interface FileChangeHistoryQueryInput {
   limit?: number;
 }
 
+export interface ProjectSearchInput {
+  query?: string;
+  limit?: number;
+}
+
+export interface ProjectExportQueryInput {
+  projectId?: string;
+  query?: string;
+  generatedAt?: string;
+}
+
 export interface SubMindRepository {
   getSnapshot(): Promise<SubMindStoreSnapshot>;
+  searchProjects(input?: ProjectSearchInput): Promise<ExternalProjectSummary[]>;
+  getProjectExport(input: ProjectExportQueryInput): Promise<ExternalProjectExport | null>;
   getEventHistory(input?: EventHistoryQueryInput): Promise<Event[]>;
   getFileChangeHistory(input?: FileChangeHistoryQueryInput): Promise<FileChange[]>;
   getActionHistory(actionId: string, limit?: number): Promise<Event[]>;
@@ -121,6 +139,20 @@ const actionRiskRank: Record<ActionItem["riskLevel"], number> = {
 
 function compareDescending(left: string, right: string): number {
   return right.localeCompare(left);
+}
+
+function sortProfiles(items: Profile[]): Profile[] {
+  return [...items].sort((left, right) =>
+    compareDescending(left.updatedAt, right.updatedAt) ||
+    compareDescending(left.createdAt, right.createdAt)
+  );
+}
+
+function sortProjects(items: Project[]): Project[] {
+  return [...items].sort((left, right) =>
+    compareDescending(left.updatedAt, right.updatedAt) ||
+    compareDescending(left.createdAt, right.createdAt)
+  );
 }
 
 function sortSessions(items: Session[]): Session[] {
@@ -221,6 +253,121 @@ function sortActions(items: ActionItem[]): ActionItem[] {
   });
 }
 
+function earliestTimestamp(left: string, right: string): string {
+  return left.localeCompare(right) <= 0 ? left : right;
+}
+
+function latestTimestamp(left: string, right: string): string {
+  return left.localeCompare(right) >= 0 ? left : right;
+}
+
+function dedupeById<T extends { id: string }>(items: T[]): T[] {
+  return [...new Map(items.map((item) => [item.id, item])).values()];
+}
+
+function mergeProfiles(items: Profile[]): Profile[] {
+  const profilesById = new Map<string, Profile>();
+
+  for (const profile of items) {
+    const existing = profilesById.get(profile.id);
+
+    if (!existing) {
+      profilesById.set(profile.id, profile);
+      continue;
+    }
+
+    const incomingIsNewer = profile.updatedAt.localeCompare(existing.updatedAt) >= 0;
+    const defaultProjectId =
+      (incomingIsNewer ? profile.defaultProjectId : existing.defaultProjectId) ??
+      existing.defaultProjectId ??
+      profile.defaultProjectId;
+
+    const mergedProfile: Profile = {
+      kind: "Profile",
+      id: existing.id,
+      displayName:
+        (incomingIsNewer ? profile.displayName : existing.displayName) ||
+        existing.displayName ||
+        profile.displayName,
+      metadata: {
+        ...existing.metadata,
+        ...profile.metadata
+      },
+      createdAt: earliestTimestamp(existing.createdAt, profile.createdAt),
+      updatedAt: latestTimestamp(existing.updatedAt, profile.updatedAt)
+    };
+
+    if (defaultProjectId) {
+      mergedProfile.defaultProjectId = defaultProjectId;
+    }
+
+    profilesById.set(profile.id, mergedProfile);
+  }
+
+  return sortProfiles([...profilesById.values()]);
+}
+
+function mergeProjects(items: Project[]): Project[] {
+  const projectsById = new Map<string, Project>();
+
+  for (const project of items) {
+    const existing = projectsById.get(project.id);
+
+    if (!existing) {
+      projectsById.set(project.id, project);
+      continue;
+    }
+
+    const incomingIsNewer = project.updatedAt.localeCompare(existing.updatedAt) >= 0;
+    const description =
+      (incomingIsNewer ? project.description : existing.description) ??
+      existing.description ??
+      project.description;
+    const summary =
+      (incomingIsNewer ? project.summary : existing.summary) ??
+      existing.summary ??
+      project.summary;
+    const workspacePath =
+      (incomingIsNewer ? project.workspacePath : existing.workspacePath) ??
+      existing.workspacePath ??
+      project.workspacePath;
+    const repositoryRemote =
+      (incomingIsNewer ? project.repositoryRemote : existing.repositoryRemote) ??
+      existing.repositoryRemote ??
+      project.repositoryRemote;
+
+    const mergedProject: Project = {
+      kind: "Project",
+      id: existing.id,
+      profileId: incomingIsNewer ? project.profileId : existing.profileId,
+      name: incomingIsNewer ? project.name : existing.name,
+      descriptors: [...new Set([...existing.descriptors, ...project.descriptors])],
+      createdAt: earliestTimestamp(existing.createdAt, project.createdAt),
+      updatedAt: latestTimestamp(existing.updatedAt, project.updatedAt)
+    };
+
+    if (description) {
+      mergedProject.description = description;
+    }
+
+    if (summary) {
+      mergedProject.summary = summary;
+    }
+
+    if (workspacePath) {
+      mergedProject.workspacePath = workspacePath;
+    }
+
+    if (repositoryRemote) {
+      mergedProject.repositoryRemote = repositoryRemote;
+    }
+
+    projectsById.set(project.id, mergedProject);
+  }
+
+  return sortProjects([...projectsById.values()]);
+}
+
 function createActionTransitionEvent(
   action: ActionItem,
   nextState: ActionItem["state"],
@@ -241,7 +388,9 @@ function createActionTransitionEvent(
     category: "action",
     nodeCategory: "control",
     timestamp,
-    summary: `${action.title} moved from ${action.state} to ${nextState}.`,
+    summary: redactSensitiveText(
+      `${action.title} moved from ${action.state} to ${nextState}.`
+    ).value,
     metadata: {
       actionId: action.id,
       actor,
@@ -271,9 +420,10 @@ function createMemoryCurationEvent(
     category: "memory",
     nodeCategory: "cognitive",
     timestamp,
-    summary:
+    summary: redactSensitiveText(
       input.changeSummary ??
-      `${memoryItem.summary} was curated as ${input.curationState}.`,
+        `${memoryItem.summary} was curated as ${input.curationState}.`
+    ).value,
     metadata: {
       memoryId: memoryItem.id,
       actor,
@@ -284,6 +434,21 @@ function createMemoryCurationEvent(
       previousCurationState: memoryItem.curationState,
       nextCurationState: input.curationState
     }
+  };
+}
+
+function redactOptionalText(value: string | null | undefined): string | null | undefined {
+  return typeof value === "string" ? redactSensitiveText(value).value : value;
+}
+
+function redactMemoryCurationInput(input: MemoryCurationInput): MemoryCurationInput {
+  return {
+    ...input,
+    summary: redactSensitiveText(input.summary).value,
+    content: redactSensitiveText(input.content).value,
+    ...(input.changeSummary
+      ? { changeSummary: redactSensitiveText(input.changeSummary).value }
+      : {})
   };
 }
 
@@ -342,11 +507,9 @@ export function queryEventHistoryFromSnapshot(
     })
   );
 
-  if (!input.limit || input.limit <= 0) {
-    return items;
-  }
-
-  return items.slice(0, input.limit);
+  return redactSensitiveObject(
+    !input.limit || input.limit <= 0 ? items : items.slice(0, input.limit)
+  );
 }
 
 export function queryFileChangeHistoryFromSnapshot(
@@ -379,11 +542,64 @@ export function queryFileChangeHistoryFromSnapshot(
     })
   );
 
-  if (!input.limit || input.limit <= 0) {
-    return items;
+  return redactSensitiveObject(
+    !input.limit || input.limit <= 0 ? items : items.slice(0, input.limit)
+  );
+}
+
+export function mergeStoreSnapshots(
+  snapshots: SubMindStoreSnapshot[]
+): SubMindStoreSnapshot {
+  const populatedSnapshots = snapshots.filter(
+    (snapshot) =>
+      snapshot.profiles.length > 0 ||
+      snapshot.projects.length > 0 ||
+      snapshot.sessions.length > 0 ||
+      snapshot.threads.length > 0 ||
+      snapshot.tasks.length > 0 ||
+      snapshot.events.length > 0 ||
+      snapshot.fileChanges.length > 0 ||
+      snapshot.memory.length > 0 ||
+      snapshot.guidance.length > 0 ||
+      snapshot.actions.length > 0
+  );
+
+  if (populatedSnapshots.length === 0) {
+    return createEmptyStoreSnapshot();
   }
 
-  return items.slice(0, input.limit);
+  return {
+    profiles: mergeProfiles(
+      populatedSnapshots.flatMap((snapshot) => snapshot.profiles)
+    ),
+    projects: mergeProjects(
+      populatedSnapshots.flatMap((snapshot) => snapshot.projects)
+    ),
+    sessions: sortSessions(
+      dedupeById(populatedSnapshots.flatMap((snapshot) => snapshot.sessions))
+    ),
+    threads: sortThreads(
+      dedupeById(populatedSnapshots.flatMap((snapshot) => snapshot.threads))
+    ),
+    tasks: sortTasks(
+      dedupeById(populatedSnapshots.flatMap((snapshot) => snapshot.tasks))
+    ),
+    events: sortEvents(
+      dedupeById(populatedSnapshots.flatMap((snapshot) => snapshot.events))
+    ),
+    fileChanges: sortFileChanges(
+      dedupeById(populatedSnapshots.flatMap((snapshot) => snapshot.fileChanges))
+    ),
+    memory: sortMemory(
+      dedupeById(populatedSnapshots.flatMap((snapshot) => snapshot.memory))
+    ),
+    guidance: sortGuidance(
+      dedupeById(populatedSnapshots.flatMap((snapshot) => snapshot.guidance))
+    ),
+    actions: sortActions(
+      dedupeById(populatedSnapshots.flatMap((snapshot) => snapshot.actions))
+    )
+  };
 }
 
 export function createPreviewRepository(
@@ -394,6 +610,13 @@ export function createPreviewRepository(
   return {
     async getSnapshot() {
       return cloneStoreSnapshot(liveSnapshot);
+    },
+    async searchProjects(input = {}) {
+      return structuredClone(searchProjects(liveSnapshot, input));
+    },
+    async getProjectExport(input) {
+      const projectExport = resolveProjectExternalExport(liveSnapshot, input);
+      return projectExport ? structuredClone(projectExport) : null;
     },
     async getEventHistory(input = {}) {
       return queryEventHistoryFromSnapshot(liveSnapshot, input);
@@ -426,8 +649,9 @@ export function createPreviewRepository(
 
       const timestamp = input.timestamp ?? new Date().toISOString();
       const actor = input.actor ?? "operator";
-      const nextActualOutcome =
-        input.actualOutcome ?? previousAction.actualOutcome;
+      const nextActualOutcome = redactOptionalText(
+        input.actualOutcome ?? previousAction.actualOutcome
+      );
       const nextAction: ActionItem = {
         ...previousAction,
         state: input.nextState,
@@ -453,35 +677,36 @@ export function createPreviewRepository(
         ])
       };
 
-      return structuredClone(nextAction);
+      return redactSensitiveObject(structuredClone(nextAction));
     },
     async updateMemoryItem(input) {
+      const safeInput = redactMemoryCurationInput(input);
       const memoryIndex = liveSnapshot.memory.findIndex(
-        (memoryItem) => memoryItem.id === input.memoryId
+        (memoryItem) => memoryItem.id === safeInput.memoryId
       );
 
       if (memoryIndex === -1) {
-        throw new Error(`Memory item "${input.memoryId}" was not found.`);
+        throw new Error(`Memory item "${safeInput.memoryId}" was not found.`);
       }
 
       const previousMemory = liveSnapshot.memory[memoryIndex];
 
       if (!previousMemory) {
-        throw new Error(`Memory item "${input.memoryId}" was not found.`);
+        throw new Error(`Memory item "${safeInput.memoryId}" was not found.`);
       }
 
-      const timestamp = input.timestamp ?? new Date().toISOString();
-      const actor = input.actor ?? "operator";
+      const timestamp = safeInput.timestamp ?? new Date().toISOString();
+      const actor = safeInput.actor ?? "operator";
       const nextMemory: MemoryItem = {
         ...previousMemory,
-        summary: input.summary,
-        content: input.content,
-        status: input.status,
-        isPinned: input.isPinned,
-        curationState: input.curationState,
-        isEdited: input.curationState === "edited",
-        ...(input.changeSummary
-          ? { changeSummary: input.changeSummary }
+        summary: safeInput.summary,
+        content: safeInput.content,
+        status: safeInput.status,
+        isPinned: safeInput.isPinned,
+        curationState: safeInput.curationState,
+        isEdited: safeInput.curationState === "edited",
+        ...(safeInput.changeSummary
+          ? { changeSummary: safeInput.changeSummary }
           : previousMemory.changeSummary
             ? { changeSummary: previousMemory.changeSummary }
             : {}),
@@ -494,12 +719,12 @@ export function createPreviewRepository(
         ...liveSnapshot,
         memory: sortMemory(nextMemoryItems),
         events: sortEvents([
-          createMemoryCurationEvent(previousMemory, input, timestamp, actor),
+          createMemoryCurationEvent(previousMemory, safeInput, timestamp, actor),
           ...liveSnapshot.events
         ])
       };
 
-      return structuredClone(nextMemory);
+      return redactSensitiveObject(structuredClone(nextMemory));
     }
   };
 }
@@ -517,6 +742,199 @@ export function createEmptyStoreSnapshot(): SubMindStoreSnapshot {
     guidance: [],
     actions: []
   };
+}
+
+function normalizeProjectSearchValue(value: string): string {
+  return value.replaceAll("\\", "/").toLowerCase();
+}
+
+function tokenizeProjectSearchQuery(query: string | undefined): string[] {
+  return normalizeProjectSearchValue(query ?? "")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function createProjectSearchHaystack(project: Project): string {
+  return normalizeProjectSearchValue(
+    [
+      project.id,
+      project.name,
+      project.description,
+      project.summary,
+      project.workspacePath,
+      project.repositoryRemote,
+      ...project.descriptors
+    ]
+      .filter((value): value is string => !!value)
+      .join(" ")
+  );
+}
+
+export function projectMatchesSearchQuery(
+  project: Project,
+  query: string | undefined
+): boolean {
+  const tokens = tokenizeProjectSearchQuery(query);
+
+  if (tokens.length === 0) {
+    return true;
+  }
+
+  const haystack = createProjectSearchHaystack(project);
+  return tokens.every((token) => haystack.includes(token));
+}
+
+function getProjectScopedCollections(
+  snapshot: SubMindStoreSnapshot,
+  projectId: string
+) {
+  return {
+    sessions: getProjectSessions(snapshot, projectId),
+    threads: sortThreads(
+      snapshot.threads.filter((thread) => thread.projectId === projectId)
+    ),
+    tasks: sortTasks(snapshot.tasks.filter((task) => task.projectId === projectId)),
+    events: getProjectEvents(snapshot, projectId),
+    fileChanges: getProjectFileChanges(snapshot, projectId),
+    memory: getProjectMemoryItems(snapshot, projectId),
+    guidance: getProjectGuidanceItems(snapshot, projectId),
+    actions: getProjectActionItems(snapshot, projectId)
+  };
+}
+
+function getProjectCollectionCounts(
+  collections: ReturnType<typeof getProjectScopedCollections>
+): ProjectCollectionCounts {
+  return {
+    sessions: collections.sessions.length,
+    threads: collections.threads.length,
+    tasks: collections.tasks.length,
+    events: collections.events.length,
+    fileChanges: collections.fileChanges.length,
+    memory: collections.memory.length,
+    guidance: collections.guidance.length,
+    actions: collections.actions.length
+  };
+}
+
+function getProjectLastActivityAt(
+  project: Project,
+  collections: ReturnType<typeof getProjectScopedCollections>
+): string | null {
+  const timestamps = [
+    project.updatedAt,
+    ...collections.sessions.map((item) => item.updatedAt),
+    ...collections.threads.map((item) => item.updatedAt),
+    ...collections.tasks.map((item) => item.updatedAt),
+    ...collections.events.map((item) => item.timestamp),
+    ...collections.fileChanges.map((item) => item.updatedAt),
+    ...collections.memory.map((item) => item.updatedAt),
+    ...collections.guidance.map((item) => item.updatedAt),
+    ...collections.actions.map((item) => item.updatedAt)
+  ].filter(Boolean);
+
+  return timestamps.sort((left, right) => compareDescending(left, right))[0] ?? null;
+}
+
+function createExternalProjectSummary(
+  snapshot: SubMindStoreSnapshot,
+  project: Project
+): ExternalProjectSummary {
+  const collections = getProjectScopedCollections(snapshot, project.id);
+
+  return {
+    kind: "ExternalProjectSummary",
+    project,
+    counts: getProjectCollectionCounts(collections),
+    lastActivityAt: getProjectLastActivityAt(project, collections)
+  };
+}
+
+function getProjectSearchLimit(limit: number | undefined): number {
+  if (!limit || limit <= 0) {
+    return 25;
+  }
+
+  return Math.min(Math.trunc(limit), 100);
+}
+
+export function searchProjects(
+  snapshot: SubMindStoreSnapshot,
+  input: ProjectSearchInput = {}
+): ExternalProjectSummary[] {
+  const results = snapshot.projects
+    .filter((project) => projectMatchesSearchQuery(project, input.query))
+    .slice(0, getProjectSearchLimit(input.limit))
+    .map((project) => createExternalProjectSummary(snapshot, project));
+
+  return redactSensitiveObject(results);
+}
+
+export function createProjectExternalExport(
+  snapshot: SubMindStoreSnapshot,
+  projectId: string,
+  generatedAt = new Date().toISOString()
+): ExternalProjectExport | null {
+  const project = getProjectById(snapshot, projectId);
+
+  if (!project) {
+    return null;
+  }
+
+  const collections = getProjectScopedCollections(snapshot, project.id);
+
+  return redactSensitiveObject({
+    kind: "ExternalProjectExport",
+    apiVersion: subMindExternalApiVersion,
+    generatedAt,
+    access: {
+      mode: "read_only",
+      auth: "bearer_token",
+      localOnly: true
+    },
+    project,
+    counts: getProjectCollectionCounts(collections),
+    ...collections
+  });
+}
+
+export function resolveProjectExternalExport(
+  snapshot: SubMindStoreSnapshot,
+  input: ProjectExportQueryInput
+): ExternalProjectExport | null {
+  if (input.projectId) {
+    return createProjectExternalExport(
+      snapshot,
+      input.projectId,
+      input.generatedAt
+    );
+  }
+
+  const query = input.query?.trim();
+
+  if (!query) {
+    return null;
+  }
+
+  const normalizedQuery = normalizeProjectSearchValue(query);
+  const directProject = snapshot.projects.find((project) => {
+    const normalizedWorkspace = normalizeProjectSearchValue(
+      project.workspacePath ?? ""
+    );
+
+    return (
+      normalizeProjectSearchValue(project.id) === normalizedQuery ||
+      normalizeProjectSearchValue(project.name) === normalizedQuery ||
+      (!!normalizedWorkspace && normalizedWorkspace === normalizedQuery)
+    );
+  });
+  const matchedProject =
+    directProject ?? searchProjects(snapshot, { query, limit: 1 })[0]?.project;
+
+  return matchedProject
+    ? createProjectExternalExport(snapshot, matchedProject.id, input.generatedAt)
+    : null;
 }
 
 export function getProjectById(

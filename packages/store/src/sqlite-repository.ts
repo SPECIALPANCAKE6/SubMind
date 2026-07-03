@@ -1,20 +1,27 @@
 import type {
   ActionItem,
+  ExternalProjectExport,
+  ExternalProjectSummary,
   Event,
   FileChange,
   GuidanceItem,
   MemoryItem,
   Profile,
   Project,
+  ProjectCollectionCounts,
   Session,
   Task,
   Thread
 } from "@submind/shared-schemas";
+import { subMindExternalApiVersion } from "@submind/shared-schemas";
+import { redactSensitiveObject, redactSensitiveText } from "@submind/policy";
 import type {
   ActionStateTransitionInput,
   EventHistoryQueryInput,
   FileChangeHistoryQueryInput,
   MemoryCurationInput,
+  ProjectExportQueryInput,
+  ProjectSearchInput,
   SubMindRepository,
   SubMindStoreSnapshot
 } from "./index.js";
@@ -634,7 +641,9 @@ function createActionTransitionEventRecord(
     category: "action" as const,
     nodeCategory: "control" as const,
     timestamp,
-    summary: `${actionRow.title} moved from ${actionRow.state} to ${input.nextState}.`,
+    summary: redactSensitiveText(
+      `${actionRow.title} moved from ${actionRow.state} to ${input.nextState}.`
+    ).value,
     metadataJson: JSON.stringify({
       actionId: actionRow.id,
       actor,
@@ -662,9 +671,10 @@ function createMemoryCurationEventRecord(
     category: "memory" as const,
     nodeCategory: "cognitive" as const,
     timestamp,
-    summary:
+    summary: redactSensitiveText(
       input.changeSummary ??
-      `${memoryRow.summary} was curated as ${input.curationState}.`,
+        `${memoryRow.summary} was curated as ${input.curationState}.`
+    ).value,
     metadataJson: JSON.stringify({
       memoryId: memoryRow.id,
       actor,
@@ -675,6 +685,21 @@ function createMemoryCurationEventRecord(
       previousCurationState: memoryRow.curationState,
       nextCurationState: input.curationState
     })
+  };
+}
+
+function redactOptionalText(value: string | null | undefined): string | null | undefined {
+  return typeof value === "string" ? redactSensitiveText(value).value : value;
+}
+
+function redactMemoryCurationInput(input: MemoryCurationInput): MemoryCurationInput {
+  return {
+    ...input,
+    summary: redactSensitiveText(input.summary).value,
+    content: redactSensitiveText(input.content).value,
+    ...(input.changeSummary
+      ? { changeSummary: redactSensitiveText(input.changeSummary).value }
+      : {})
   };
 }
 
@@ -1348,6 +1373,8 @@ export async function syncRuntimeSnapshotIntoDatabase(
 
   if (currentRuntimeSource !== runtimeSourceValue) {
     await executeStatements(db, clearAllDataStatements);
+  } else {
+    await executeStatements(db, clearCoreDataStatements);
   }
 
   await seedCoreSnapshotIntoDatabase(db, snapshot);
@@ -1358,7 +1385,7 @@ export async function syncRuntimeSnapshotIntoDatabase(
 
   await seedRetainedSnapshotIntoDatabase(
     db,
-    createRuntimeRetainedSnapshot(snapshot, existingSnapshot)
+    redactSensitiveObject(createRuntimeRetainedSnapshot(snapshot, existingSnapshot))
   );
 
   await setAppStateValue(db, runtimeSourceKey, runtimeSourceValue);
@@ -1606,7 +1633,7 @@ async function readEventHistory(
 ): Promise<Event[]> {
   const { query, bindValues } = buildEventHistoryQuery(input);
   const rows = await db.select<EventRow[]>(query, bindValues);
-  return rows.map(mapEventRow);
+  return redactSensitiveObject(rows.map(mapEventRow));
 }
 
 async function readFileChangeHistory(
@@ -1615,7 +1642,7 @@ async function readFileChangeHistory(
 ): Promise<FileChange[]> {
   const { query, bindValues } = buildFileChangeHistoryQuery(input);
   const rows = await db.select<FileChangeRow[]>(query, bindValues);
-  return rows.map(mapFileChangeRow);
+  return redactSensitiveObject(rows.map(mapFileChangeRow));
 }
 
 async function selectActionRow(
@@ -1708,6 +1735,187 @@ async function selectFallbackProjectId(
   return projectRows[0]?.id ?? null;
 }
 
+function normalizeProjectSearchValue(value: string): string {
+  return value.replaceAll("\\", "/").toLowerCase();
+}
+
+function tokenizeProjectSearchQuery(query: string | undefined): string[] {
+  return normalizeProjectSearchValue(query ?? "")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function sqliteProjectMatchesSearchQuery(
+  project: Project,
+  query: string | undefined
+): boolean {
+  const tokens = tokenizeProjectSearchQuery(query);
+
+  if (tokens.length === 0) {
+    return true;
+  }
+
+  const haystack = normalizeProjectSearchValue(
+    [
+      project.id,
+      project.name,
+      project.description,
+      project.summary,
+      project.workspacePath,
+      project.repositoryRemote,
+      ...project.descriptors
+    ]
+      .filter((value): value is string => !!value)
+      .join(" ")
+  );
+
+  return tokens.every((token) => haystack.includes(token));
+}
+
+function getSqliteProjectScopedCollections(
+  snapshot: SubMindStoreSnapshot,
+  projectId: string
+) {
+  return {
+    sessions: snapshot.sessions.filter((item) => item.projectId === projectId),
+    threads: snapshot.threads.filter((item) => item.projectId === projectId),
+    tasks: snapshot.tasks.filter((item) => item.projectId === projectId),
+    events: snapshot.events.filter((item) => item.projectId === projectId),
+    fileChanges: snapshot.fileChanges.filter((item) => item.projectId === projectId),
+    memory: snapshot.memory.filter((item) => item.projectId === projectId),
+    guidance: snapshot.guidance.filter((item) => item.projectId === projectId),
+    actions: snapshot.actions.filter((item) => item.projectId === projectId)
+  };
+}
+
+function getSqliteProjectCollectionCounts(
+  collections: ReturnType<typeof getSqliteProjectScopedCollections>
+): ProjectCollectionCounts {
+  return {
+    sessions: collections.sessions.length,
+    threads: collections.threads.length,
+    tasks: collections.tasks.length,
+    events: collections.events.length,
+    fileChanges: collections.fileChanges.length,
+    memory: collections.memory.length,
+    guidance: collections.guidance.length,
+    actions: collections.actions.length
+  };
+}
+
+function getSqliteProjectLastActivityAt(
+  project: Project,
+  collections: ReturnType<typeof getSqliteProjectScopedCollections>
+): string | null {
+  const timestamps = [
+    project.updatedAt,
+    ...collections.sessions.map((item) => item.updatedAt),
+    ...collections.threads.map((item) => item.updatedAt),
+    ...collections.tasks.map((item) => item.updatedAt),
+    ...collections.events.map((item) => item.timestamp),
+    ...collections.fileChanges.map((item) => item.updatedAt),
+    ...collections.memory.map((item) => item.updatedAt),
+    ...collections.guidance.map((item) => item.updatedAt),
+    ...collections.actions.map((item) => item.updatedAt)
+  ].filter(Boolean);
+
+  return timestamps.sort((left, right) => right.localeCompare(left))[0] ?? null;
+}
+
+function getProjectSearchLimit(limit: number | undefined): number {
+  if (!limit || limit <= 0) {
+    return 25;
+  }
+
+  return Math.min(Math.trunc(limit), 100);
+}
+
+function searchSqliteSnapshotProjects(
+  snapshot: SubMindStoreSnapshot,
+  input: ProjectSearchInput = {}
+): ExternalProjectSummary[] {
+  const results: ExternalProjectSummary[] = snapshot.projects
+    .filter((project) => sqliteProjectMatchesSearchQuery(project, input.query))
+    .slice(0, getProjectSearchLimit(input.limit))
+    .map((project) => {
+      const collections = getSqliteProjectScopedCollections(snapshot, project.id);
+
+      return {
+        kind: "ExternalProjectSummary",
+        project,
+        counts: getSqliteProjectCollectionCounts(collections),
+        lastActivityAt: getSqliteProjectLastActivityAt(project, collections)
+      };
+    });
+
+  return redactSensitiveObject(results);
+}
+
+function createSqliteProjectExport(
+  snapshot: SubMindStoreSnapshot,
+  projectId: string,
+  generatedAt = new Date().toISOString()
+): ExternalProjectExport | null {
+  const project =
+    snapshot.projects.find((projectItem) => projectItem.id === projectId) ?? null;
+
+  if (!project) {
+    return null;
+  }
+
+  const collections = getSqliteProjectScopedCollections(snapshot, project.id);
+
+  return redactSensitiveObject({
+    kind: "ExternalProjectExport",
+    apiVersion: subMindExternalApiVersion,
+    generatedAt,
+    access: {
+      mode: "read_only",
+      auth: "bearer_token",
+      localOnly: true
+    },
+    project,
+    counts: getSqliteProjectCollectionCounts(collections),
+    ...collections
+  });
+}
+
+function resolveSqliteProjectExport(
+  snapshot: SubMindStoreSnapshot,
+  input: ProjectExportQueryInput
+): ExternalProjectExport | null {
+  if (input.projectId) {
+    return createSqliteProjectExport(snapshot, input.projectId, input.generatedAt);
+  }
+
+  const query = input.query?.trim();
+
+  if (!query) {
+    return null;
+  }
+
+  const normalizedQuery = normalizeProjectSearchValue(query);
+  const directProject = snapshot.projects.find((project) => {
+    const normalizedWorkspace = normalizeProjectSearchValue(
+      project.workspacePath ?? ""
+    );
+
+    return (
+      normalizeProjectSearchValue(project.id) === normalizedQuery ||
+      normalizeProjectSearchValue(project.name) === normalizedQuery ||
+      (!!normalizedWorkspace && normalizedWorkspace === normalizedQuery)
+    );
+  });
+  const matchedProject =
+    directProject ??
+    searchSqliteSnapshotProjects(snapshot, { query, limit: 1 })[0]?.project;
+
+  return matchedProject
+    ? createSqliteProjectExport(snapshot, matchedProject.id, input.generatedAt)
+    : null;
+}
+
 export function createSqliteRepository(
   options: CreateSqliteRepositoryOptions
 ): SubMindRepository {
@@ -1732,6 +1940,14 @@ export function createSqliteRepository(
     async getSnapshot() {
       await ensureInitialized();
       return readSnapshot(db);
+    },
+    async searchProjects(input = {}) {
+      await ensureInitialized();
+      return searchSqliteSnapshotProjects(await readSnapshot(db), input);
+    },
+    async getProjectExport(input) {
+      await ensureInitialized();
+      return resolveSqliteProjectExport(await readSnapshot(db), input);
     },
     async getEventHistory(input = {}) {
       await ensureInitialized();
@@ -1761,8 +1977,9 @@ export function createSqliteRepository(
 
       const timestamp = input.timestamp ?? now();
       const actor = input.actor ?? "operator";
-      const nextActualOutcome =
-        input.actualOutcome ?? existingAction.actualOutcome;
+      const nextActualOutcome = redactOptionalText(
+        input.actualOutcome ?? existingAction.actualOutcome
+      );
 
       await db.execute(
         `UPDATE action_items
@@ -1802,24 +2019,25 @@ export function createSqliteRepository(
         ]
       );
 
-      return mapActionItemRow({
+      return redactSensitiveObject(mapActionItemRow({
         ...existingAction,
         state: input.nextState,
         actualOutcome: nextActualOutcome ?? null,
         updatedAt: timestamp
-      });
+      }));
     },
     async updateMemoryItem(input) {
       await ensureInitialized();
 
-      const existingMemory = await selectMemoryRow(db, input.memoryId);
+      const safeInput = redactMemoryCurationInput(input);
+      const existingMemory = await selectMemoryRow(db, safeInput.memoryId);
 
       if (!existingMemory) {
-        throw new Error(`Memory item "${input.memoryId}" was not found.`);
+        throw new Error(`Memory item "${safeInput.memoryId}" was not found.`);
       }
 
-      const timestamp = input.timestamp ?? now();
-      const actor = input.actor ?? "operator";
+      const timestamp = safeInput.timestamp ?? now();
+      const actor = safeInput.actor ?? "operator";
       const fallbackProjectId =
         existingMemory.projectId ?? (await selectFallbackProjectId(db)) ?? "project-global";
 
@@ -1835,21 +2053,21 @@ export function createSqliteRepository(
              updated_at = $8
          WHERE id = $9`,
         [
-          input.summary,
-          input.content,
-          input.status,
-          input.curationState,
-          input.changeSummary ?? null,
-          stringifyBoolean(input.isPinned),
-          stringifyBoolean(input.curationState === "edited"),
+          safeInput.summary,
+          safeInput.content,
+          safeInput.status,
+          safeInput.curationState,
+          safeInput.changeSummary ?? null,
+          stringifyBoolean(safeInput.isPinned),
+          stringifyBoolean(safeInput.curationState === "edited"),
           timestamp,
-          input.memoryId
+          safeInput.memoryId
         ]
       );
 
       const eventRecord = createMemoryCurationEventRecord(
         existingMemory,
-        input,
+        safeInput,
         timestamp,
         actor,
         fallbackProjectId
@@ -1877,17 +2095,17 @@ export function createSqliteRepository(
         ]
       );
 
-      return mapMemoryItemRow({
+      return redactSensitiveObject(mapMemoryItemRow({
         ...existingMemory,
-        summary: input.summary,
-        content: input.content,
-        status: input.status,
-        curationState: input.curationState,
-        changeSummary: input.changeSummary ?? null,
-        isPinned: stringifyBoolean(input.isPinned),
-        isEdited: stringifyBoolean(input.curationState === "edited"),
+        summary: safeInput.summary,
+        content: safeInput.content,
+        status: safeInput.status,
+        curationState: safeInput.curationState,
+        changeSummary: safeInput.changeSummary ?? null,
+        isPinned: stringifyBoolean(safeInput.isPinned),
+        isEdited: stringifyBoolean(safeInput.curationState === "edited"),
         updatedAt: timestamp
-      });
+      }));
     }
   };
 }

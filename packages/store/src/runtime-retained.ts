@@ -9,6 +9,7 @@ import type {
   Task,
   Thread
 } from "@submind/shared-schemas";
+import { redactSensitiveObject } from "@submind/policy";
 import type { SubMindStoreSnapshot } from "./index.js";
 
 export interface DerivedRetainedState {
@@ -569,29 +570,30 @@ export function deriveRetainedState(
   snapshot: SubMindStoreSnapshot,
   nowTimestamp: string = new Date().toISOString()
 ): DerivedRetainedState {
-  const existingMemoryById = new Map(snapshot.memory.map((item) => [item.id, item]));
+  const sourceSnapshot = redactSensitiveObject(snapshot);
+  const existingMemoryById = new Map(sourceSnapshot.memory.map((item) => [item.id, item]));
   const existingGuidanceById = new Map(
-    snapshot.guidance.map((item) => [item.id, item])
+    sourceSnapshot.guidance.map((item) => [item.id, item])
   );
 
-  const projectMemory = snapshot.projects.map((project) =>
+  const projectMemory = sourceSnapshot.projects.map((project) =>
     buildProjectContextMemory(
-      snapshot,
+      sourceSnapshot,
       project,
       nowTimestamp,
       existingMemoryById.get(buildMemoryId("project-context", project.id))
     )
   );
-  const threadMemory = snapshot.threads.map((thread) => {
-    const session = snapshot.sessions.find((item) => item.id === thread.sessionId);
-    const project = snapshot.projects.find((item) => item.id === thread.projectId);
+  const threadMemory = sourceSnapshot.threads.map((thread) => {
+    const session = sourceSnapshot.sessions.find((item) => item.id === thread.sessionId);
+    const project = sourceSnapshot.projects.find((item) => item.id === thread.projectId);
 
     if (!session) {
       return null;
     }
 
     return buildThreadMemory(
-      snapshot,
+      sourceSnapshot,
       thread,
       session,
       project,
@@ -599,13 +601,13 @@ export function deriveRetainedState(
       existingMemoryById.get(buildMemoryId("thread", thread.id))
     );
   });
-  const taskMemory = snapshot.tasks
+  const taskMemory = sourceSnapshot.tasks
     .filter((task) => task.status === "blocked" || task.status === "active")
     .map((task) =>
       buildTaskMemory(
-        snapshot,
+        sourceSnapshot,
         task,
-        snapshot.threads.find((thread) => thread.id === task.threadId),
+        sourceSnapshot.threads.find((thread) => thread.id === task.threadId),
         nowTimestamp,
         existingMemoryById.get(buildMemoryId("task", task.id))
       )
@@ -614,10 +616,10 @@ export function deriveRetainedState(
   const memory = [...projectMemory, ...threadMemory, ...taskMemory]
     .filter((item): item is MemoryItem => item !== null)
     .sort((left, right) => compareDescending(left.updatedAt, right.updatedAt));
-  const guidance = snapshot.threads
+  const guidance = sourceSnapshot.threads
     .map((thread) => {
-      const session = snapshot.sessions.find((item) => item.id === thread.sessionId);
-      const project = snapshot.projects.find((item) => item.id === thread.projectId);
+      const session = sourceSnapshot.sessions.find((item) => item.id === thread.sessionId);
+      const project = sourceSnapshot.projects.find((item) => item.id === thread.projectId);
 
       if (!session) {
         return null;
@@ -625,7 +627,7 @@ export function deriveRetainedState(
 
       return buildThreadGuidance(
         {
-          ...snapshot,
+          ...sourceSnapshot,
           memory
         },
         thread,

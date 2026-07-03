@@ -1,5 +1,5 @@
 {
-  "name": "@submind/store",
+  "name": "@submind/protocol-copilot",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,8 +12,7 @@
     }
   },
   "dependencies": {
-    "@submind/policy": "workspace:*",
     "@submind/shared-schemas": "workspace:*",
-    "drizzle-orm": "^0.44.7"
+    "@submind/store": "workspace:*"
   }
 }

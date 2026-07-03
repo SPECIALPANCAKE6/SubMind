@@ -20,6 +20,9 @@
       "path": "../../packages/protocol-codex"
     },
     {
+      "path": "../../packages/protocol-copilot"
+    },
+    {
       "path": "../../packages/shared-schemas"
     },
     {

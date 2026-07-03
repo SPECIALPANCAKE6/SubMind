@@ -21,6 +21,7 @@
     "@fontsource/sora": "^5.2.6",
     "@submind/core": "workspace:*",
     "@submind/policy": "workspace:*",
+    "@submind/protocol-copilot": "workspace:*",
     "@submind/protocol-codex": "workspace:*",
     "@submind/shared-schemas": "workspace:*",
     "@submind/store": "workspace:*",

@@ -1,5 +1,9 @@
 import { describeRuntimeContext } from "@submind/core";
-import { starterSubagents } from "@submind/policy";
+import { redactSensitiveText, starterSubagents } from "@submind/policy";
+import {
+  createStoreSnapshotFromCopilotRuntimeFeed,
+  type CopilotRuntimeFeed
+} from "@submind/protocol-copilot";
 import {
   createCodexProtocolEnvelope,
   createEmptyCodexProtocolEnvelope,
@@ -11,11 +15,14 @@ import {
   type EventHistoryQueryInput,
   type FileChangeHistoryQueryInput,
   type MemoryCurationInput,
+  type ProjectExportQueryInput,
+  type ProjectSearchInput,
   createPreviewRepository,
   createSqliteRepository,
   createPreviewStoreSnapshot,
   getPrimarySessionThread,
   getProjectSessions,
+  mergeStoreSnapshots,
   syncRuntimeSnapshotIntoDatabase,
   subMindSqliteDatabasePath,
   type SubMindRepository,
@@ -62,22 +69,34 @@ function getTauriInvoker(): TauriInvoke | null {
   return tauriWindow.__TAURI_INTERNALS__?.invoke ?? null;
 }
 
-async function loadCodexRuntimeSnapshot(): Promise<SubMindStoreSnapshot | null> {
+async function loadDesktopRuntimeSnapshot(): Promise<SubMindStoreSnapshot | null> {
   const invoke = getTauriInvoker();
 
   if (!invoke) {
     return null;
   }
 
-  const feed = await invoke<CodexRuntimeFeed>("load_codex_runtime_feed", {
-    limit: 24
-  });
+  const [codexFeed, copilotFeed] = await Promise.all([
+    invoke<CodexRuntimeFeed>("load_codex_runtime_feed", {
+      limit: 24
+    }),
+    invoke<CopilotRuntimeFeed>("load_copilot_runtime_feed", {
+      limit: 24
+    })
+  ]);
+  const runtimeSnapshots: SubMindStoreSnapshot[] = [];
 
-  if (!feed.threads.length) {
-    return null;
+  if (codexFeed.threads.length > 0) {
+    runtimeSnapshots.push(createStoreSnapshotFromCodexRuntimeFeed(codexFeed));
   }
 
-  return createStoreSnapshotFromCodexRuntimeFeed(feed);
+  if (copilotFeed.sessions.length > 0) {
+    runtimeSnapshots.push(createStoreSnapshotFromCopilotRuntimeFeed(copilotFeed));
+  }
+
+  return runtimeSnapshots.length > 0
+    ? mergeStoreSnapshots(runtimeSnapshots)
+    : null;
 }
 
 export function createDesktopRepository(): SubMindRepository {
@@ -109,13 +128,16 @@ export function createDesktopRepository(): SubMindRepository {
         };
 
         try {
-          const runtimeSnapshot = await loadCodexRuntimeSnapshot();
+          const runtimeSnapshot = await loadDesktopRuntimeSnapshot();
 
           if (runtimeSnapshot) {
             await syncRuntimeSnapshotIntoDatabase(db, runtimeSnapshot);
           }
         } catch (error) {
-          console.warn("SubMind fell back to preview snapshot seed.", error);
+          console.warn(
+            "SubMind fell back to preview snapshot seed.",
+            redactSensitiveText(error instanceof Error ? error.message : String(error)).value
+          );
         }
 
         return createSqliteRepository({
@@ -131,6 +153,12 @@ export function createDesktopRepository(): SubMindRepository {
   return {
     async getSnapshot() {
       return (await resolveRepository()).getSnapshot();
+    },
+    async searchProjects(input?: ProjectSearchInput) {
+      return (await resolveRepository()).searchProjects(input);
+    },
+    async getProjectExport(input: ProjectExportQueryInput) {
+      return (await resolveRepository()).getProjectExport(input);
     },
     async getEventHistory(input?: EventHistoryQueryInput) {
       return (await resolveRepository()).getEventHistory(input);

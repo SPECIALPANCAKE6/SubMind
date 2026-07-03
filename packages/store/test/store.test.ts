@@ -1,6 +1,10 @@
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
+import { createStoreSnapshotFromCopilotRuntimeFeed } from "../../protocol-copilot/src/index";
+import { createStoreSnapshotFromCodexRuntimeFeed } from "../../protocol-codex/src/index";
 import {
+  createSqliteRepository,
   createPreviewStoreSnapshot,
   createPreviewRepository,
   type ActionStateTransitionInput,
@@ -9,8 +13,151 @@ import {
   getProjectActionItems,
   getProjectGuidanceItems,
   getProjectMemoryItems,
-  getProjectSessions
+  getProjectSessions,
+  mergeStoreSnapshots,
+  resolveProjectExternalExport,
+  searchProjects,
+  syncRuntimeSnapshotIntoDatabase,
+  type SubMindStoreSnapshot
 } from "../src/index";
+
+function createSqliteTestAdapter() {
+  const database = new DatabaseSync(":memory:");
+
+  const bind = (values?: unknown[]) =>
+    values
+      ? Object.fromEntries(
+          values.map((value, index) => [String(index + 1), value])
+        )
+      : undefined;
+
+  return {
+    select<T>(query: string, bindValues?: unknown[]) {
+      const statement = database.prepare(query);
+      const bindings = bind(bindValues);
+
+      return Promise.resolve(
+        (bindings ? statement.all(bindings) : statement.all()) as T
+      );
+    },
+    execute(query: string, bindValues?: unknown[]) {
+      const statement = database.prepare(query);
+      const bindings = bind(bindValues);
+      const result = bindings ? statement.run(bindings) : statement.run();
+
+      return Promise.resolve({
+        rowsAffected: result.changes,
+        lastInsertId:
+          result.lastInsertRowid === undefined
+            ? null
+            : Number(result.lastInsertRowid)
+      });
+    }
+  };
+}
+
+function createLegacyRuntimeSnapshot(): SubMindStoreSnapshot {
+  const profileId = "profile-local-operator";
+  const projectId = "project-submind-legacy";
+  const sessionId = "session-thread-legacy";
+  const threadId = "thread-thread-legacy";
+  const taskId = "task-thread-legacy";
+
+  return {
+    profiles: [
+      {
+        kind: "Profile",
+        id: profileId,
+        displayName: "Operator",
+        defaultProjectId: projectId,
+        metadata: {
+          source: "codex_local",
+          threadCount: 1
+        },
+        createdAt: "2026-03-29T18:00:00.000Z",
+        updatedAt: "2026-03-29T18:41:00.000Z"
+      }
+    ],
+    projects: [
+      {
+        kind: "Project",
+        id: projectId,
+        profileId,
+        name: "SubMind",
+        description: "Legacy grouped workspace",
+        summary: "Project row from an older runtime identity scheme.",
+        workspacePath: "C:/Workspace/SubMind",
+        descriptors: ["typescript"],
+        createdAt: "2026-03-29T18:00:00.000Z",
+        updatedAt: "2026-03-29T18:41:00.000Z"
+      }
+    ],
+    sessions: [
+      {
+        kind: "Session",
+        id: sessionId,
+        profileId,
+        projectId,
+        status: "active",
+        summary: "Legacy session",
+        startedAt: "2026-03-29T18:00:00.000Z",
+        createdAt: "2026-03-29T18:00:00.000Z",
+        updatedAt: "2026-03-29T18:41:00.000Z"
+      }
+    ],
+    threads: [
+      {
+        kind: "Thread",
+        id: threadId,
+        sessionId,
+        projectId,
+        title: "Legacy thread",
+        status: "open",
+        summary: "Legacy thread summary",
+        createdAt: "2026-03-29T18:00:00.000Z",
+        updatedAt: "2026-03-29T18:41:00.000Z"
+      }
+    ],
+    tasks: [
+      {
+        kind: "Task",
+        id: taskId,
+        sessionId,
+        threadId,
+        projectId,
+        title: "Legacy task",
+        status: "active",
+        priority: "high",
+        summary: "Legacy task summary",
+        createdAt: "2026-03-29T18:00:00.000Z",
+        updatedAt: "2026-03-29T18:41:00.000Z"
+      }
+    ],
+    events: [
+      {
+        kind: "Event",
+        id: "event-legacy",
+        projectId,
+        sessionId,
+        threadId,
+        taskId,
+        originType: "codex",
+        eventType: "thread-opened",
+        category: "lifecycle",
+        nodeCategory: "anchor",
+        timestamp: "2026-03-29T18:41:00.000Z",
+        summary: "Legacy thread opened.",
+        metadata: {},
+        createdAt: "2026-03-29T18:41:00.000Z",
+        updatedAt: "2026-03-29T18:41:00.000Z"
+      }
+    ],
+    fileChanges: [],
+    memory: [],
+    guidance: [],
+    actions: []
+  };
+}
 
 describe("store", () => {
   it("builds a preview snapshot with aligned project, event, and action data", () => {
@@ -58,6 +205,73 @@ describe("store", () => {
     expect(getProjectActionItems(snapshot, "project-submind")[0]?.state).toBe(
       "pending"
     );
+  });
+
+  it("searches projects and exports a read-only project data package", async () => {
+    const snapshot = await createPreviewRepository().getSnapshot();
+    const searchResults = searchProjects(snapshot, {
+      query: "tauri operator",
+      limit: 5
+    });
+    const projectExport = resolveProjectExternalExport(snapshot, {
+      query: "SubMind",
+      generatedAt: "2026-03-30T11:00:00.000Z"
+    });
+
+    expect(searchResults).toHaveLength(1);
+    expect(searchResults[0]?.project.id).toBe("project-submind");
+    expect(searchResults[0]?.counts.sessions).toBe(1);
+    expect(projectExport?.kind).toBe("ExternalProjectExport");
+    expect(projectExport?.access).toEqual({
+      mode: "read_only",
+      auth: "bearer_token",
+      localOnly: true
+    });
+    expect(projectExport?.project.name).toBe("SubMind");
+    expect(projectExport?.sessions[0]?.projectId).toBe("project-submind");
+    expect(projectExport?.memory[0]?.summary).toContain("Desktop app must stay thin");
+    expect(projectExport?.guidance[0]?.state).toBe("injected");
+    expect(projectExport?.actions[0]?.riskLevel).toBe("high");
+  });
+
+  it("redacts secrets from project search and external project exports", () => {
+    const secret = "sm_TESTTOKENabcdefghijklmnopqrstuvwxyz123456";
+    const snapshot = createPreviewStoreSnapshot();
+    const secretSnapshot: SubMindStoreSnapshot = {
+      ...snapshot,
+      projects: snapshot.projects.map((project) =>
+        project.id === "project-submind"
+          ? {
+              ...project,
+              summary: `Project summary captured token ${secret}.`
+            }
+          : project
+      ),
+      events: snapshot.events.map((event) =>
+        event.projectId === "project-submind"
+          ? {
+              ...event,
+              summary: `${event.summary} Bearer ${secret}`,
+              metadata: {
+                ...event.metadata,
+                token: secret
+              }
+            }
+          : event
+      )
+    };
+    const searchResults = searchProjects(secretSnapshot, {
+      query: "SubMind",
+      limit: 5
+    });
+    const projectExport = resolveProjectExternalExport(secretSnapshot, {
+      query: "SubMind",
+      generatedAt: "2026-03-30T11:00:00.000Z"
+    });
+
+    expect(JSON.stringify(searchResults)).not.toContain(secret);
+    expect(JSON.stringify(projectExport)).not.toContain(secret);
+    expect(JSON.stringify(projectExport)).toContain("[redacted:");
   });
 
   it("records action state transitions with updated action state and history events", async () => {
@@ -142,5 +356,108 @@ describe("store", () => {
     expect(memory.isEdited).toBe(true);
     expect(history[0]?.eventType).toBe("memory-curated");
     expect(history[0]?.summary).toContain("Clarified the thin-shell rule");
+  });
+
+  it("replaces stale runtime project rows when the runtime snapshot is resynced", async () => {
+    const db = createSqliteTestAdapter();
+    const repository = createSqliteRepository({ db });
+    const currentSnapshot = createStoreSnapshotFromCodexRuntimeFeed({
+      profileName: "Operator",
+      threads: [
+        {
+          id: "thread-1",
+          title: "Current thread",
+          cwd: "C:\\Workspace\\SubMind\\",
+          createdAt: 1774866000,
+          updatedAt: 1774869600,
+          gitBranch: "main",
+          gitOriginUrl: null,
+          firstUserMessage: "Current runtime thread.",
+          descriptorHints: ["typescript", "tauri"]
+        }
+      ],
+      events: [],
+      fileChanges: []
+    });
+
+    await syncRuntimeSnapshotIntoDatabase(db, createLegacyRuntimeSnapshot());
+    await syncRuntimeSnapshotIntoDatabase(db, currentSnapshot);
+
+    const snapshot = await repository.getSnapshot();
+    const currentProjectId = currentSnapshot.projects[0]?.id;
+
+    expect(snapshot.projects).toHaveLength(1);
+    expect(snapshot.projects[0]?.id).toBe(currentProjectId);
+    expect(
+      snapshot.projects.some((project) => project.id === "project-submind-legacy")
+    ).toBe(false);
+    expect(snapshot.sessions).toHaveLength(1);
+    expect(snapshot.sessions[0]?.projectId).toBe(currentProjectId);
+    expect(snapshot.threads[0]?.projectId).toBe(currentProjectId);
+  });
+
+  it("merges Codex and Copilot runtime snapshots onto the same project when the workspace matches", () => {
+    const codexSnapshot = createStoreSnapshotFromCodexRuntimeFeed({
+      profileName: "Operator",
+      threads: [
+        {
+          id: "thread-1",
+          title: "Codex review",
+          cwd: "C:/Users/xtrem/OneDrive/Documents/codecraft/SubMind",
+          createdAt: 1774866000,
+          updatedAt: 1774869600,
+          gitBranch: "main",
+          gitOriginUrl: null,
+          firstUserMessage: "Review the config.",
+          descriptorHints: ["typescript", "tauri"]
+        }
+      ],
+      events: [],
+      fileChanges: []
+    });
+    const copilotSnapshot = createStoreSnapshotFromCopilotRuntimeFeed({
+      profileName: "Operator",
+      sessions: [
+        {
+          id: "chat-1",
+          title: "Explain selected config",
+          workspacePath:
+            "vscode-remote://wsl%2Bubuntu/mnt/c/Users/xtrem/OneDrive/Documents/codecraft/SubMind",
+          storageKey: "workspace-submind",
+          source: "workspace",
+          createdAt: 1774856904348,
+          updatedAt: 1774857543062,
+          responderUsername: "GitHub Copilot",
+          mode: "agent",
+          modelIdentifier: "copilot/auto",
+          modelName: "GPT-5.3-Codex",
+          latestUserMessage: "Explain the selected config.",
+          requests: [
+            {
+              id: "request-1",
+              timestamp: 1774857496782,
+              message: "Explain the selected config.",
+              response: "This config grants access to the workspace path.",
+              command: "explain",
+              modelId: "gpt-5.3-codex",
+              referencedFiles: [],
+              editedFiles: [],
+              toolNames: []
+            }
+          ]
+        }
+      ]
+    });
+
+    const merged = mergeStoreSnapshots([codexSnapshot, copilotSnapshot]);
+
+    expect(merged.projects).toHaveLength(1);
+    expect(merged.sessions).toHaveLength(2);
+    expect(new Set(merged.sessions.map((session) => session.projectId))).toEqual(
+      new Set([merged.projects[0]!.id])
+    );
+    expect(merged.projects[0]?.descriptors).toEqual(
+      expect.arrayContaining(["typescript", "tauri", "vscode", "copilot"])
+    );
   });
 });

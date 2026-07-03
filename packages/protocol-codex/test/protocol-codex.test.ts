@@ -108,4 +108,60 @@ describe("protocol-codex", () => {
     expect(envelope.threadId).toBe(threadId);
     expect(envelope.events).toHaveLength(1);
   });
+
+  it("groups Windows path variants for the same workspace into one project", () => {
+    const feed: CodexRuntimeFeed = {
+      profileName: "Operator",
+      threads: [
+        {
+          id: "thread-1",
+          title: "Recent work",
+          cwd: "C:\\Workspace\\SubMind\\",
+          createdAt: 1774866000,
+          updatedAt: 1774869600,
+          gitBranch: "main",
+          gitOriginUrl: null,
+          firstUserMessage: "Recent work in SubMind.",
+          descriptorHints: ["typescript"]
+        },
+        {
+          id: "thread-2",
+          title: "Older work",
+          cwd: "file:///c:/workspace/submind",
+          createdAt: 1774862400,
+          updatedAt: 1774866000,
+          gitBranch: "main",
+          gitOriginUrl: null,
+          firstUserMessage: "Older work in the same workspace.",
+          descriptorHints: ["tauri"]
+        },
+        {
+          id: "thread-3",
+          title: "Oldest work",
+          cwd: "\\\\?\\C:\\WORKSPACE\\SUBMIND",
+          createdAt: 1774858800,
+          updatedAt: 1774862400,
+          gitBranch: "main",
+          gitOriginUrl: null,
+          firstUserMessage: "Oldest work in the same workspace.",
+          descriptorHints: ["pnpm"]
+        }
+      ],
+      events: [],
+      fileChanges: []
+    };
+
+    const snapshot = createStoreSnapshotFromCodexRuntimeFeed(feed);
+    const projectId = snapshot.projects[0]?.id;
+
+    expect(snapshot.projects).toHaveLength(1);
+    expect(snapshot.projects[0]?.name).toBe("SubMind");
+    expect(snapshot.projects[0]?.workspacePath).toBe("C:/Workspace/SubMind");
+    expect(
+      snapshot.sessions.every((session) => session.projectId === projectId)
+    ).toBe(true);
+    expect(
+      snapshot.threads.every((thread) => thread.projectId === projectId)
+    ).toBe(true);
+  });
 });

@@ -1,0 +1,41 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  createProjectGroupingKey,
+  createProjectIdFromWorkspacePath,
+  getWorkspaceBaseName,
+  normalizeWorkspacePath
+} from "../src/index";
+
+describe("project identity", () => {
+  it("normalizes workspace paths across Windows, file URIs, and WSL mount paths", () => {
+    expect(
+      normalizeWorkspacePath("C:\\Users\\xtrem\\OneDrive\\Documents\\codecraft\\SubMind\\")
+    ).toBe("C:/Users/xtrem/OneDrive/Documents/codecraft/SubMind");
+    expect(
+      normalizeWorkspacePath("file:///c:/Users/xtrem/OneDrive/Documents/codecraft/SubMind")
+    ).toBe("C:/Users/xtrem/OneDrive/Documents/codecraft/SubMind");
+    expect(
+      normalizeWorkspacePath("/mnt/c/Users/xtrem/OneDrive/Documents/codecraft/SubMind")
+    ).toBe("C:/Users/xtrem/OneDrive/Documents/codecraft/SubMind");
+    expect(
+      normalizeWorkspacePath(
+        "vscode-remote://wsl%2Bubuntu/mnt/c/Users/xtrem/OneDrive/Documents/codecraft/SubMind"
+      )
+    ).toBe("C:/Users/xtrem/OneDrive/Documents/codecraft/SubMind");
+  });
+
+  it("creates the same grouping key and project id for equivalent workspace locators", () => {
+    const windowsPath = "C:/Users/xtrem/OneDrive/Documents/codecraft/SubMind";
+    const wslRemotePath =
+      "vscode-remote://wsl%2Bubuntu/mnt/c/Users/xtrem/OneDrive/Documents/codecraft/SubMind";
+
+    expect(createProjectGroupingKey(windowsPath)).toBe(
+      createProjectGroupingKey(wslRemotePath)
+    );
+    expect(createProjectIdFromWorkspacePath(windowsPath)).toBe(
+      createProjectIdFromWorkspacePath(wslRemotePath)
+    );
+    expect(getWorkspaceBaseName(wslRemotePath)).toBe("SubMind");
+  });
+});

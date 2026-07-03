@@ -106,6 +106,9 @@ importers:
 
   packages/store:
     dependencies:
+      '@submind/policy':
+        specifier: workspace:*
+        version: link:../policy
       '@submind/shared-schemas':
         specifier: workspace:*
         version: link:../shared-schemas
@@ -127,6 +130,9 @@ importers:
 
   packages/ui-state:
     dependencies:
+      '@submind/policy':
+        specifier: workspace:*
+        version: link:../policy
       '@submind/shared-schemas':
         specifier: workspace:*
         version: link:../shared-schemas

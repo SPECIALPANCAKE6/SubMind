@@ -23,6 +23,9 @@
       "@submind/policy": [
         "packages/policy/src/index.ts"
       ],
+      "@submind/protocol-copilot": [
+        "packages/protocol-copilot/src/index.ts"
+      ],
       "@submind/protocol-codex": [
         "packages/protocol-codex/src/index.ts"
       ],

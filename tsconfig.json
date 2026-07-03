@@ -11,6 +11,9 @@
       "path": "./packages/protocol-codex"
     },
     {
+      "path": "./packages/protocol-copilot"
+    },
+    {
       "path": "./packages/store"
     },
     {
@@ -30,4 +33,3 @@
     }
   ]
 }
-
