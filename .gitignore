@@ -3,6 +3,7 @@ dist/
 web-dist/
 target/
 coverage/
+artifacts/
 *.tsbuildinfo
 .DS_Store
 Thumbs.db

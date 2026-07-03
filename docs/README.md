@@ -21,6 +21,10 @@ The current desktop shell is now on the new runtime stack:
 - `packages/store` now carries `Drizzle` SQLite schema definitions plus the preview repository/snapshot layer and the first real SQLite-backed repository path.
 - `packages/workers` now projects checkpoint summaries that the Guidance screen can consume deterministically.
 - `packages/workers` now also projects checkpoint summaries that the Actions screen can consume deterministically.
+- The native runtime now merges Codex and Copilot activity around canonical workspace identity.
+- Project search is available in the persistent project stack without changing selection or focus scope.
+- A disabled-by-default local API exposes authenticated, read-only project search and exports with secret redaction.
+- Protected values remain redacted in normal UI state and can be revealed temporarily by fingerprint from visible redaction markers.
 
 Project and shell behavior is now aligned around the newer primary-screen model:
 
@@ -35,14 +39,14 @@ Project and shell behavior is now aligned around the newer primary-screen model:
 
 ## Run Commands
 
-- `npm run shell:output` prints the current preview bootstrap, initial UI state, runtime context, and store snapshot as JSON.
-- `npm run desktop:browser:dev` starts the React browser shell preview at `http://127.0.0.1:4173`.
-- `npm run desktop:browser:build` builds the React browser shell into `apps/desktop/web-dist`.
-- `npm run desktop:tauri:dev` launches the same React shell in a native Tauri desktop window.
-- `npm run desktop:dev` remains an alias for `npm run desktop:browser:dev`.
-- `npm run desktop:build` remains an alias for `npm run desktop:browser:build`.
-- `npm run typecheck` verifies the TypeScript workspace.
-- `npm test` runs the schema, worker, store, state, and shell renderer tests.
+- `pnpm run shell:output` prints the current preview bootstrap, initial UI state, runtime context, and store snapshot as JSON.
+- `pnpm run desktop:browser:dev` starts the React browser shell preview at `http://127.0.0.1:4173`.
+- `pnpm run desktop:browser:build` builds the React browser shell into `apps/desktop/web-dist`.
+- `pnpm run desktop:tauri:dev` launches the same React shell in a native Tauri desktop window.
+- `pnpm run desktop:dev` remains an alias for `pnpm run desktop:browser:dev`.
+- `pnpm run desktop:build` remains an alias for `pnpm run desktop:browser:build`.
+- `pnpm run typecheck` verifies the TypeScript workspace.
+- `pnpm test` runs the schema, worker, store, state, and shell renderer tests.
 
 ## Native Desktop Notes
 
