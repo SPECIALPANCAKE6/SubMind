@@ -364,6 +364,47 @@
     color: var(--sm-text-strong);
   }
 
+  .sm-command-tools {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.34rem;
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    padding-left: 0.46rem;
+  }
+
+  .sm-command-tools__button {
+    min-height: 2rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.035);
+    padding: 0.38rem 0.72rem;
+    color: var(--sm-text-muted);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1;
+    text-transform: uppercase;
+    transition:
+      color 150ms ease,
+      border-color 150ms ease,
+      background 150ms ease,
+      transform 150ms ease;
+  }
+
+  .sm-command-tools__button:hover,
+  .sm-command-tools__button:focus-visible {
+    border-color: rgba(197, 232, 224, 0.22);
+    background: rgba(110, 231, 183, 0.1);
+    color: var(--sm-text-body);
+    transform: translateY(-1px);
+  }
+
+  .sm-command-tools__button--active {
+    border-color: rgba(110, 231, 183, 0.3);
+    background: rgba(110, 231, 183, 0.16);
+    color: #d7fff2;
+  }
+
   .sm-metric {
     display: grid;
     gap: 0.2rem;
@@ -488,6 +529,12 @@
     box-shadow:
       0 0 0 1px rgba(255, 255, 255, 0.04),
       0 14px 28px rgba(7, 9, 17, 0.28);
+  }
+
+  .sm-screen-switcher__button--support {
+    border-color: rgba(110, 231, 183, 0.3);
+    background: rgba(110, 231, 183, 0.14);
+    color: #d7fff2;
   }
 
   .sm-redacted-secret {
@@ -1337,6 +1384,313 @@
     color: rgba(223, 211, 255, 0.78);
   }
 
+  .sm-settings-shell {
+    display: grid;
+    gap: clamp(0.72rem, 0.55vw, 1rem);
+    min-height: 0;
+    align-items: start;
+  }
+
+  .sm-settings-lead,
+  .sm-settings-section-list,
+  .sm-settings-control-list {
+    display: grid;
+    gap: clamp(0.64rem, 0.48vw, 0.88rem);
+    min-width: 0;
+  }
+
+  .sm-settings-hero {
+    min-height: clamp(12rem, 22vh, 16rem);
+  }
+
+  .sm-settings-runtime,
+  .sm-settings-section,
+  .sm-settings-metrics-panel {
+    display: grid;
+    gap: 0.78rem;
+    min-width: 0;
+    padding: clamp(0.76rem, 0.56vw, 1rem);
+  }
+
+  .sm-settings-section__header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.74rem;
+    min-width: 0;
+  }
+
+  .sm-settings-section__header h3 {
+    margin: 0.18rem 0 0;
+    color: var(--sm-text-strong);
+    font-size: clamp(1.05rem, 0.42vw + 0.98rem, 1.34rem);
+    line-height: 1.08;
+  }
+
+  .sm-settings-section__body {
+    margin: 0;
+    max-width: 72ch;
+    color: var(--sm-text-muted);
+    font-size: 0.82rem;
+    line-height: 1.55;
+  }
+
+  .sm-settings-row-list,
+  .sm-settings-source-grid,
+  .sm-settings-metric-grid,
+  .sm-settings-detail-grid {
+    display: grid;
+    gap: 0.54rem;
+    min-width: 0;
+  }
+
+  .sm-settings-row,
+  .sm-settings-source,
+  .sm-settings-control,
+  .sm-settings-metric {
+    display: grid;
+    min-width: 0;
+    gap: 0.58rem;
+    border: 1px solid rgba(223, 211, 255, 0.1);
+    border-radius: 8px;
+    background: rgba(10, 13, 24, 0.2);
+    padding: 0.72rem 0.78rem;
+  }
+
+  .sm-settings-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sm-settings-row[data-tone="plum"],
+  .sm-settings-source[data-tone="plum"],
+  .sm-settings-control[data-tone="plum"],
+  .sm-settings-metric[data-tone="plum"] {
+    border-color: rgba(215, 191, 255, 0.18);
+    background: rgba(124, 82, 189, 0.14);
+  }
+
+  .sm-settings-row[data-tone="violet"],
+  .sm-settings-source[data-tone="violet"],
+  .sm-settings-control[data-tone="violet"],
+  .sm-settings-metric[data-tone="violet"] {
+    border-color: rgba(110, 231, 183, 0.15);
+    background: rgba(17, 108, 101, 0.12);
+  }
+
+  .sm-settings-row[data-tone="amber"],
+  .sm-settings-source[data-tone="amber"],
+  .sm-settings-control[data-tone="amber"],
+  .sm-settings-metric[data-tone="amber"] {
+    border-color: rgba(215, 162, 76, 0.22);
+    background: rgba(215, 162, 76, 0.1);
+  }
+
+  .sm-settings-row__main,
+  .sm-settings-control__main {
+    display: grid;
+    gap: 0.34rem;
+    min-width: 0;
+  }
+
+  .sm-settings-row__heading,
+  .sm-settings-source__header,
+  .sm-settings-control__header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.48rem 0.72rem;
+    min-width: 0;
+  }
+
+  .sm-settings-row__label {
+    color: var(--sm-text-strong);
+    font-size: 0.9rem;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+
+  .sm-settings-row__value,
+  .sm-settings-source__value,
+  .sm-settings-row__status,
+  .sm-settings-control__value {
+    display: inline-flex;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.045);
+    padding: 0.24rem 0.52rem;
+    color: var(--sm-text-body);
+    font-size: 0.68rem;
+    font-weight: 700;
+    line-height: 1.25;
+  }
+
+  .sm-settings-row__status {
+    width: fit-content;
+    color: var(--sm-text-muted);
+  }
+
+  .sm-settings-row__description,
+  .sm-settings-source p,
+  .sm-settings-control__description,
+  .sm-settings-metric p {
+    margin: 0;
+    overflow-wrap: anywhere;
+    color: var(--sm-text-muted);
+    font-size: 0.76rem;
+    line-height: 1.55;
+  }
+
+  .sm-settings-source h4,
+  .sm-settings-control h4 {
+    margin: 0.12rem 0 0;
+    color: var(--sm-text-strong);
+    font-size: 1rem;
+    line-height: 1.1;
+  }
+
+  .sm-settings-control {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .sm-settings-control__metrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.34rem;
+  }
+
+  .sm-settings-control__metrics span,
+  .sm-settings-metric__label {
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    background: rgba(255, 255, 255, 0.035);
+    padding: 0.18rem 0.44rem;
+    color: var(--sm-text-muted);
+    font-size: 0.62rem;
+    font-weight: 700;
+    line-height: 1.25;
+  }
+
+  .sm-settings-field {
+    display: grid;
+    gap: 0.32rem;
+    min-width: min(13rem, 100%);
+    align-content: start;
+  }
+
+  .sm-settings-field span {
+    color: var(--sm-text-dim);
+    font-size: 0.6rem;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  .sm-settings-field input,
+  .sm-settings-field select {
+    min-height: 2.35rem;
+    width: 100%;
+    border-radius: 8px;
+    border: 1px solid rgba(223, 211, 255, 0.14);
+    background: rgba(8, 12, 21, 0.72);
+    padding: 0.48rem 0.6rem;
+    color: var(--sm-text-strong);
+    font-size: 0.78rem;
+    font-weight: 700;
+    outline: none;
+    transition:
+      border-color 150ms ease,
+      box-shadow 150ms ease,
+      background 150ms ease;
+  }
+
+  .sm-settings-field input:focus-visible,
+  .sm-settings-field select:focus-visible {
+    border-color: rgba(110, 231, 183, 0.38);
+    background: rgba(8, 12, 21, 0.88);
+    box-shadow: 0 0 0 3px rgba(110, 231, 183, 0.12);
+  }
+
+  .sm-settings-metric {
+    gap: 0.34rem;
+  }
+
+  .sm-settings-metric strong {
+    color: var(--sm-text-strong);
+    font-size: clamp(1.12rem, 0.42vw + 1rem, 1.42rem);
+    line-height: 1;
+  }
+
+  .sm-settings-reset {
+    border-radius: 999px;
+    border: 1px solid rgba(223, 211, 255, 0.16);
+    background: rgba(255, 255, 255, 0.045);
+    padding: 0.44rem 0.72rem;
+    color: var(--sm-text-body);
+    font-size: 0.7rem;
+    font-weight: 800;
+    line-height: 1;
+    transition:
+      border-color 150ms ease,
+      background 150ms ease,
+      transform 150ms ease;
+  }
+
+  .sm-settings-reset:hover,
+  .sm-settings-reset:focus-visible {
+    border-color: rgba(223, 211, 255, 0.28);
+    background: rgba(255, 255, 255, 0.075);
+    transform: translateY(-1px);
+  }
+
+  .sm-settings-footer {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .sm-settings-return {
+    border-radius: 999px;
+    border: 1px solid rgba(110, 231, 183, 0.28);
+    background: rgba(110, 231, 183, 0.12);
+    padding: 0.64rem 0.92rem;
+    color: #d7fff2;
+    font-size: 0.78rem;
+    font-weight: 800;
+    line-height: 1;
+    transition:
+      border-color 150ms ease,
+      background 150ms ease,
+      transform 150ms ease;
+  }
+
+  .sm-settings-return:hover,
+  .sm-settings-return:focus-visible {
+    border-color: rgba(174, 255, 230, 0.42);
+    background: rgba(110, 231, 183, 0.18);
+    transform: translateY(-1px);
+  }
+
+  @media (min-width: 920px) {
+    .sm-settings-row {
+      grid-template-columns: minmax(0, 1fr) max-content;
+      align-items: start;
+    }
+
+    .sm-settings-control {
+      grid-template-columns: minmax(0, 1fr) minmax(11rem, 12.5rem);
+    }
+
+    .sm-settings-source-grid,
+    .sm-settings-metric-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
   @media (min-width: 1180px) {
     .sm-guidance-shell {
       grid-template-columns:
@@ -1350,6 +1704,15 @@
         minmax(16rem, 0.78fr)
         minmax(0, 1.14fr)
         minmax(18rem, 0.88fr);
+    }
+
+    .sm-settings-shell {
+      grid-template-columns: minmax(18rem, 0.82fr) minmax(0, 1.18fr);
+      align-items: start;
+    }
+
+    .sm-settings-footer {
+      grid-column: 1 / -1;
     }
   }
 
@@ -2353,10 +2716,16 @@
     color: #f6d498;
   }
 
+  .sm-status-pill--origin-hermes {
+    border-color: rgba(98, 199, 187, 0.24);
+    background: rgba(54, 148, 139, 0.16);
+    color: #b9f2eb;
+  }
+
   .sm-status-pill--origin-mixed {
     border-color: rgba(214, 195, 248, 0.28);
     background:
-      linear-gradient(90deg, rgba(91, 49, 149, 0.24), rgba(215, 162, 76, 0.16));
+      linear-gradient(90deg, rgba(91, 49, 149, 0.24), rgba(54, 148, 139, 0.16), rgba(215, 162, 76, 0.16));
     color: var(--sm-text-strong);
   }
 
@@ -2511,6 +2880,9 @@
   .sm-project-card__affordance:focus-visible,
   .sm-screen-switcher__button:focus-visible,
   .sm-segmented__button:focus-visible,
+  .sm-command-tools__button:focus-visible,
+  .sm-settings-reset:focus-visible,
+  .sm-settings-return:focus-visible,
   .sm-redacted-secret__eye:focus-visible,
   .sm-chip:focus-visible {
     outline: 2px solid rgba(212, 189, 255, 0.72);

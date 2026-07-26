@@ -24,6 +24,13 @@ import {
   createGuidanceCheckpointSummary
 } from "@submind/workers";
 import { redactSensitiveObject } from "@submind/policy";
+import {
+  checkpointModes,
+  defaultSettingsConfigDraft,
+  guidanceAggressionModes,
+  normalizeSettingsConfig,
+  projectStackDensities,
+} from "@submind/shared-schemas";
 import type {
   ActionItem,
   Event,
@@ -33,6 +40,9 @@ import type {
   Project,
   ProjectStackState,
   Session,
+  SettingsConfigDraft,
+  SettingsConfigKey,
+  SettingsConfigValue,
   Task,
   Thread
 } from "@submind/shared-schemas";
@@ -46,9 +56,11 @@ export const primaryScreens = [
   "guidance",
   "actions"
 ] as const;
+export const supportSurfaces = ["settings"] as const;
 
 export type LayoutMode = (typeof layoutModes)[number];
 export type PrimaryScreen = (typeof primaryScreens)[number];
+export type SupportSurface = (typeof supportSurfaces)[number];
 export type AppScope = "global" | "project";
 
 export interface SecretRevealTarget {
@@ -69,6 +81,8 @@ export interface SecretProtectionModel {
 export interface ShellUiState {
   layoutMode: LayoutMode;
   primaryScreen: PrimaryScreen;
+  activeSupportSurface: SupportSurface | null;
+  settingsDraft: SettingsConfigDraft;
   selectedProjectId: string | null;
   focusedProjectId: string | null;
   projectSearchQuery: string;
@@ -334,6 +348,84 @@ export interface ActionHistoryItemModel {
   isLatest: boolean;
 }
 
+export interface SettingsRowModel {
+  id: string;
+  label: string;
+  value: string;
+  description: string;
+  statusLabel: string;
+  tone: ShellCardModel["tone"];
+}
+
+export interface SettingsSectionModel {
+  id: string;
+  title: string;
+  body: string;
+  rows: SettingsRowModel[];
+}
+
+export interface SettingsRuntimeSourceModel {
+  sourceId: string;
+  label: string;
+  value: string;
+  description: string;
+  statusLabel: string;
+  tone: ShellCardModel["tone"];
+}
+
+export interface SettingsControlOptionModel {
+  value: string;
+  label: string;
+  description: string;
+}
+
+export type SettingsControlModel =
+  | {
+      id: SettingsConfigKey;
+      label: string;
+      description: string;
+      value: string;
+      valueLabel: string;
+      statusLabel: string;
+      tone: ShellCardModel["tone"];
+      control: {
+        kind: "select";
+        options: SettingsControlOptionModel[];
+      };
+      metrics: Array<{
+        label: string;
+        value: string;
+      }>;
+    }
+  | {
+      id: SettingsConfigKey;
+      label: string;
+      description: string;
+      value: number;
+      valueLabel: string;
+      statusLabel: string;
+      tone: ShellCardModel["tone"];
+      control: {
+        kind: "number";
+        min: number;
+        max: number;
+        step: number;
+        unitLabel: string;
+      };
+      metrics: Array<{
+        label: string;
+        value: string;
+      }>;
+    };
+
+export interface SettingsMetricModel {
+  id: string;
+  label: string;
+  value: string;
+  detail: string;
+  tone: ShellCardModel["tone"];
+}
+
 export interface ShellViewModelOptions {
   actionOutcomeDraft?: string;
   isActionMutationPending?: boolean;
@@ -348,6 +440,7 @@ export interface ShellViewModelOptions {
 export interface SubMindShellViewModel {
   layoutMode: LayoutMode;
   primaryScreen: PrimaryScreen;
+  activeSupportSurface: SupportSurface | null;
   scope: AppScope;
   activeProject: Project | null;
   secretProtection: SecretProtectionModel;
@@ -356,6 +449,7 @@ export interface SubMindShellViewModel {
     subtitle: string;
     metrics: MetricItem[];
     layoutModes: ToggleItem<LayoutMode>[];
+    supportSurfaces: ToggleItem<SupportSurface>[];
     canFocusSelectedProject: boolean;
     canClearSelection: boolean;
     canClearFocus: boolean;
@@ -433,11 +527,30 @@ export interface SubMindShellViewModel {
     pendingActionTransition: ActionTransitionState | null;
     inspector: ShellCardModel;
   };
+  settings: {
+    title: string;
+    body: string;
+    posture: ShellCardModel;
+    controls: SettingsControlModel[];
+    metrics: SettingsMetricModel[];
+    detailCards: ShellCardModel[];
+    sections: SettingsSectionModel[];
+    runtimeSources: SettingsRuntimeSourceModel[];
+    closeLabel: string;
+  };
 }
 
 export interface ShellStore extends ShellUiState {
   setLayoutMode: (layoutMode: LayoutMode) => void;
   setPrimaryScreen: (primaryScreen: PrimaryScreen) => void;
+  openSupportSurface: (supportSurface: SupportSurface) => void;
+  closeSupportSurface: () => void;
+  setSettingsDraft: (settingsConfig: SettingsConfigDraft) => void;
+  updateSettingsDraft: (
+    key: SettingsConfigKey,
+    value: SettingsConfigValue
+  ) => void;
+  resetSettingsDraft: () => void;
   selectProject: (projectId: string) => void;
   focusSelectedProject: () => void;
   toggleProjectFocus: (projectId: string) => void;
@@ -455,6 +568,7 @@ export interface ShellStore extends ShellUiState {
 }
 
 const shellQueryKey = ["submind", "snapshot"] as const;
+const settingsConfigQueryKey = ["submind", "settings-config"] as const;
 const defaultPreviewRepository = createPreviewRepository();
 
 function formatTimestampLabel(timestamp: string | undefined): string {
@@ -469,10 +583,15 @@ function pluralize(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
 function resetEntitySelections(state: ShellUiState): ShellUiState {
   return {
     ...state,
     secretRevealTarget: null,
+    activeSupportSurface: null,
     activeSessionId: null,
     activeThreadId: null,
     activeMemoryId: null,
@@ -499,6 +618,8 @@ export function createInitialShellUiState(
   return {
     layoutMode: "operator",
     primaryScreen: "dashboard",
+    activeSupportSurface: null,
+    settingsDraft: { ...defaultSettingsConfigDraft },
     selectedProjectId:
       snapshot.profiles[0]?.defaultProjectId ?? snapshot.projects[0]?.id ?? null,
     focusedProjectId: null,
@@ -552,7 +673,90 @@ export function setShellPrimaryScreen(
   return {
     ...state,
     secretRevealTarget: null,
+    activeSupportSurface: null,
     primaryScreen
+  };
+}
+
+export function openShellSupportSurface(
+  state: ShellUiState,
+  activeSupportSurface: SupportSurface
+): ShellUiState {
+  return {
+    ...state,
+    secretRevealTarget: null,
+    activeSupportSurface
+  };
+}
+
+export function closeShellSupportSurface(state: ShellUiState): ShellUiState {
+  return {
+    ...state,
+    secretRevealTarget: null,
+    activeSupportSurface: null
+  };
+}
+
+export function updateShellSettingsDraft(
+  state: ShellUiState,
+  key: SettingsConfigKey,
+  value: SettingsConfigValue
+): ShellUiState {
+  if (key === "snapshotRefreshMs") {
+    const numericValue = Number(value);
+
+    return {
+      ...state,
+      settingsDraft: {
+        ...state.settingsDraft,
+        snapshotRefreshMs: clampNumber(
+          Number.isFinite(numericValue) ? numericValue : defaultSettingsConfigDraft.snapshotRefreshMs,
+          1_000,
+          60_000
+        )
+      }
+    };
+  }
+
+  if (key === "secretAutoHideMs") {
+    const numericValue = Number(value);
+
+    return {
+      ...state,
+      settingsDraft: {
+        ...state.settingsDraft,
+        secretAutoHideMs: clampNumber(
+          Number.isFinite(numericValue) ? numericValue : defaultSettingsConfigDraft.secretAutoHideMs,
+          5_000,
+          120_000
+        )
+      }
+    };
+  }
+
+  return {
+    ...state,
+    settingsDraft: {
+      ...state.settingsDraft,
+      [key]: value
+    }
+  };
+}
+
+export function resetShellSettingsDraft(state: ShellUiState): ShellUiState {
+  return {
+    ...state,
+    settingsDraft: { ...defaultSettingsConfigDraft }
+  };
+}
+
+export function setShellSettingsDraft(
+  state: ShellUiState,
+  settingsConfig: SettingsConfigDraft
+): ShellUiState {
+  return {
+    ...state,
+    settingsDraft: normalizeSettingsConfig(settingsConfig)
   };
 }
 
@@ -695,6 +899,8 @@ export function hideShellSecretTarget(state: ShellUiState): ShellUiState {
 export const useShellStore = create<ShellStore>((set) => ({
   layoutMode: "operator",
   primaryScreen: "dashboard",
+  activeSupportSurface: null,
+  settingsDraft: { ...defaultSettingsConfigDraft },
   selectedProjectId: null,
   focusedProjectId: null,
   projectSearchQuery: "",
@@ -707,6 +913,14 @@ export const useShellStore = create<ShellStore>((set) => ({
   setLayoutMode: (layoutMode) => set((state) => setShellLayoutMode(state, layoutMode)),
   setPrimaryScreen: (primaryScreen) =>
     set((state) => setShellPrimaryScreen(state, primaryScreen)),
+  openSupportSurface: (supportSurface) =>
+    set((state) => openShellSupportSurface(state, supportSurface)),
+  closeSupportSurface: () => set((state) => closeShellSupportSurface(state)),
+  setSettingsDraft: (settingsConfig) =>
+    set((state) => setShellSettingsDraft(state, settingsConfig)),
+  updateSettingsDraft: (key, value) =>
+    set((state) => updateShellSettingsDraft(state, key, value)),
+  resetSettingsDraft: () => set((state) => resetShellSettingsDraft(state)),
   selectProject: (projectId) => set((state) => selectShellProject(state, projectId)),
   focusSelectedProject: () => set((state) => focusSelectedShellProject(state)),
   toggleProjectFocus: (projectId) =>
@@ -736,20 +950,41 @@ export const useShellStore = create<ShellStore>((set) => ({
   })
 }));
 
-export function createShellSnapshotQueryOptions(repository: SubMindRepository) {
+export function createShellSnapshotQueryOptions(
+  repository: SubMindRepository,
+  refetchIntervalMs: number = defaultSettingsConfigDraft.snapshotRefreshMs
+) {
   return queryOptions({
     queryKey: shellQueryKey,
     queryFn: () => repository.getSnapshot(),
     staleTime: 2_000,
-    refetchInterval: 5_000,
+    refetchInterval: refetchIntervalMs,
     refetchIntervalInBackground: false
   });
 }
 
+export function createSettingsConfigQueryOptions(
+  repository: SubMindRepository
+) {
+  return queryOptions({
+    queryKey: settingsConfigQueryKey,
+    queryFn: () => repository.getSettingsConfig(),
+    staleTime: 5_000,
+    refetchOnWindowFocus: false
+  });
+}
+
 export function useShellSnapshotQuery(
-  repository: SubMindRepository = defaultPreviewRepository
+  repository: SubMindRepository = defaultPreviewRepository,
+  refetchIntervalMs: number = defaultSettingsConfigDraft.snapshotRefreshMs
 ): UseQueryResult<SubMindStoreSnapshot> {
-  return useQuery(createShellSnapshotQueryOptions(repository));
+  return useQuery(createShellSnapshotQueryOptions(repository, refetchIntervalMs));
+}
+
+export function useSettingsConfigQuery(
+  repository: SubMindRepository = defaultPreviewRepository
+): UseQueryResult<SettingsConfigDraft> {
+  return useQuery(createSettingsConfigQueryOptions(repository));
 }
 
 function resolveProjectPool(
@@ -794,8 +1029,8 @@ function formatTitleCase(value: string): string {
 
 function detectRuntimeThreadSource(
   events: Event[]
-): "Codex" | "Copilot" | "Mixed" | null {
-  const runtimeSources = new Set<"Codex" | "Copilot">();
+): "Codex" | "Copilot" | "Hermes" | "Mixed" | null {
+  const runtimeSources = new Set<"Codex" | "Copilot" | "Hermes">();
 
   for (const event of events) {
     const metadataSource =
@@ -810,6 +1045,13 @@ function detectRuntimeThreadSource(
       event.eventType.startsWith("copilot_")
     ) {
       runtimeSources.add("Copilot");
+    }
+
+    if (
+      metadataSource?.startsWith("hermes") ||
+      event.eventType.startsWith("hermes_")
+    ) {
+      runtimeSources.add("Hermes");
     }
   }
 
@@ -2930,7 +3172,7 @@ function createSecretProtectionModel(
     isRevealing: !!state.secretRevealTarget,
     redactionCount: 0,
     kindLabels: state.secretRevealTarget ? [state.secretRevealTarget.label] : [],
-    autoHideMs: 30_000
+    autoHideMs: state.settingsDraft.secretAutoHideMs
   };
 }
 
@@ -2946,6 +3188,586 @@ function createProjectSearchResultLabel(
   return filteredCount === 1
     ? `1 of ${totalCount} project`
     : `${filteredCount} of ${totalCount} projects`;
+}
+
+type SettingsRuntimeSource = "Codex" | "Copilot" | "Hermes" | "SubMind";
+
+function detectEventRuntimeSource(event: Event): SettingsRuntimeSource | null {
+  const metadataSource =
+    typeof event.metadata.source === "string" ? event.metadata.source : null;
+
+  if (metadataSource?.startsWith("codex") || event.originType === "codex") {
+    return "Codex";
+  }
+
+  if (
+    metadataSource?.startsWith("copilot") ||
+    event.eventType.startsWith("copilot_")
+  ) {
+    return "Copilot";
+  }
+
+  if (
+    metadataSource?.startsWith("hermes") ||
+    event.eventType.startsWith("hermes_")
+  ) {
+    return "Hermes";
+  }
+
+  if (event.originType === "submind") {
+    return "SubMind";
+  }
+
+  return null;
+}
+
+function createRuntimeSourceSettings(
+  snapshot: SubMindStoreSnapshot
+): SettingsRuntimeSourceModel[] {
+  const sourceOrder: SettingsRuntimeSource[] = [
+    "Codex",
+    "Copilot",
+    "Hermes",
+    "SubMind"
+  ];
+  const eventCounts = new Map<SettingsRuntimeSource, number>(
+    sourceOrder.map((source) => [source, 0])
+  );
+
+  for (const event of snapshot.events) {
+    const source = detectEventRuntimeSource(event);
+
+    if (source) {
+      eventCounts.set(source, (eventCounts.get(source) ?? 0) + 1);
+    }
+  }
+
+  return sourceOrder.map((source) => {
+    const eventCount = eventCounts.get(source) ?? 0;
+    const isLive = eventCount > 0;
+
+    return {
+      sourceId: source.toLowerCase(),
+      label: source,
+      value: isLive ? pluralize(eventCount, "event") : "No events",
+      description:
+        source === "SubMind"
+          ? "Internal lifecycle, normalization, memory, guidance, and action events observed in the current snapshot."
+          : `${source} activity inferred from event origins, event types, or explicit source metadata in the current snapshot.`,
+      statusLabel: isLive ? "Observed" : "No trace",
+      tone: isLive ? (source === "SubMind" ? "plum" : "violet") : "slate"
+    };
+  });
+}
+
+function createSettingsRow(
+  id: string,
+  label: string,
+  value: string,
+  description: string,
+  statusLabel: string,
+  tone: ShellCardModel["tone"] = "slate"
+): SettingsRowModel {
+  return {
+    id,
+    label,
+    value,
+    description,
+    statusLabel,
+    tone
+  };
+}
+
+const actionRiskLevels: Array<ActionItem["riskLevel"]> = [
+  "low",
+  "medium",
+  "high",
+  "critical"
+];
+
+const riskRank: Record<ActionItem["riskLevel"], number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3
+};
+
+function formatSeconds(milliseconds: number): string {
+  return `${Math.round(milliseconds / 1_000)} seconds`;
+}
+
+function countActionsAtOrAboveRisk(
+  actions: ActionItem[],
+  threshold: ActionItem["riskLevel"]
+): number {
+  const thresholdRank = riskRank[threshold];
+
+  return actions.filter(
+    (actionItem) => riskRank[actionItem.riskLevel] >= thresholdRank
+  ).length;
+}
+
+function createSettingsControls(
+  snapshot: SubMindStoreSnapshot,
+  state: ShellUiState,
+  openActions: number,
+  injectedGuidance: number
+): SettingsControlModel[] {
+  const riskAtThreshold = countActionsAtOrAboveRisk(
+    snapshot.actions,
+    state.settingsDraft.actionRiskThreshold
+  );
+
+  return [
+    {
+      id: "snapshotRefreshMs",
+      label: "Snapshot refresh",
+      description:
+        "Controls how often the desktop shell asks the repository for a fresh operator snapshot while visible.",
+      value: state.settingsDraft.snapshotRefreshMs,
+      valueLabel: formatSeconds(state.settingsDraft.snapshotRefreshMs),
+      statusLabel: "Session editable",
+      tone: "violet",
+      control: {
+        kind: "number",
+        min: 1_000,
+        max: 60_000,
+        step: 1_000,
+        unitLabel: "ms"
+      },
+      metrics: [
+        { label: "Current interval", value: formatSeconds(state.settingsDraft.snapshotRefreshMs) },
+        { label: "Snapshot rows", value: String(snapshot.events.length) }
+      ]
+    },
+    {
+      id: "secretAutoHideMs",
+      label: "Secret reveal window",
+      description:
+        "Controls how long a revealed redaction remains visible before the shell automatically hides it again.",
+      value: state.settingsDraft.secretAutoHideMs,
+      valueLabel: formatSeconds(state.settingsDraft.secretAutoHideMs),
+      statusLabel: "Session editable",
+      tone: "amber",
+      control: {
+        kind: "number",
+        min: 5_000,
+        max: 120_000,
+        step: 5_000,
+        unitLabel: "ms"
+      },
+      metrics: [
+        { label: "Auto-hide", value: formatSeconds(state.settingsDraft.secretAutoHideMs) },
+        { label: "Reveal state", value: state.secretRevealTarget ? "revealing" : "hidden" }
+      ]
+    },
+    {
+      id: "guidanceAggression",
+      label: "Guidance aggression",
+      description:
+        "Controls how strongly SubMind should lean toward surfacing guidance candidates. Pipeline persistence will attach to policy settings later.",
+      value: state.settingsDraft.guidanceAggression,
+      valueLabel: formatTitleCase(state.settingsDraft.guidanceAggression),
+      statusLabel: "Session editable",
+      tone: "plum",
+      control: {
+        kind: "select",
+        options: guidanceAggressionModes.map((mode) => ({
+          value: mode,
+          label: formatTitleCase(mode),
+          description:
+            mode === "restrained"
+              ? "Prefer fewer, higher-confidence interventions."
+              : mode === "assertive"
+                ? "Surface more candidate guidance when context is active."
+                : "Balance intervention pressure against operator focus."
+        }))
+      },
+      metrics: [
+        { label: "Injected", value: String(injectedGuidance) },
+        { label: "Packages", value: String(snapshot.guidance.length) }
+      ]
+    },
+    {
+      id: "actionRiskThreshold",
+      label: "Action risk threshold",
+      description:
+        "Controls which action risk levels are treated as prominent in Settings metrics. Action state transitions still happen in Actions.",
+      value: state.settingsDraft.actionRiskThreshold,
+      valueLabel: formatTitleCase(state.settingsDraft.actionRiskThreshold),
+      statusLabel: "Session editable",
+      tone: riskAtThreshold > 0 ? "amber" : "slate",
+      control: {
+        kind: "select",
+        options: actionRiskLevels.map((riskLevel) => ({
+          value: riskLevel,
+          label: formatTitleCase(riskLevel),
+          description: `Count ${formatTitleCase(riskLevel)} and higher action risks.`
+        }))
+      },
+      metrics: [
+        { label: "At threshold", value: String(riskAtThreshold) },
+        { label: "Open actions", value: String(openActions) }
+      ]
+    },
+    {
+      id: "checkpointMode",
+      label: "Checkpoint mode",
+      description:
+        "Controls the preferred checkpoint posture shown to workers and future policy settings.",
+      value: state.settingsDraft.checkpointMode,
+      valueLabel: formatTitleCase(state.settingsDraft.checkpointMode),
+      statusLabel: "Session editable",
+      tone: "violet",
+      control: {
+        kind: "select",
+        options: checkpointModes.map((mode) => ({
+          value: mode,
+          label: formatTitleCase(mode),
+          description:
+            mode === "immediate"
+              ? "Run deterministic checkpoints as soon as meaningful data arrives."
+              : mode === "manual_review"
+                ? "Prefer operator review before heavier synthesis work."
+                : "Use short idle windows before synthesis checkpoints."
+        }))
+      },
+      metrics: [
+        { label: "Events", value: String(snapshot.events.length) },
+        { label: "Threads", value: String(snapshot.threads.length) }
+      ]
+    },
+    {
+      id: "projectStackDensity",
+      label: "Project stack density",
+      description:
+        "Controls the preferred Project Stack density signal. Full layout-specific density behavior can bind to this setting later.",
+      value: state.settingsDraft.projectStackDensity,
+      valueLabel: formatTitleCase(state.settingsDraft.projectStackDensity),
+      statusLabel: "Session editable",
+      tone: "slate",
+      control: {
+        kind: "select",
+        options: projectStackDensities.map((density) => ({
+          value: density,
+          label: formatTitleCase(density),
+          description:
+            density === "compact"
+              ? "Favor dense project cards."
+              : density === "expanded"
+                ? "Favor richer project context cards."
+                : "Keep the current balanced stack density."
+        }))
+      },
+      metrics: [
+        { label: "Projects", value: String(snapshot.projects.length) },
+        { label: "Selected", value: state.selectedProjectId ? "yes" : "no" }
+      ]
+    }
+  ];
+}
+
+function createSettingsMetrics(
+  snapshot: SubMindStoreSnapshot,
+  state: ShellUiState,
+  runtimeSources: SettingsRuntimeSourceModel[],
+  openActions: number
+): SettingsMetricModel[] {
+  const observedSourceCount = runtimeSources.filter(
+    (source) => source.statusLabel === "Observed"
+  ).length;
+  const riskAtThreshold = countActionsAtOrAboveRisk(
+    snapshot.actions,
+    state.settingsDraft.actionRiskThreshold
+  );
+
+  return [
+    {
+      id: "refresh",
+      label: "Refresh Interval",
+      value: formatSeconds(state.settingsDraft.snapshotRefreshMs),
+      detail: "Live TanStack Query refetch cadence for the shell snapshot.",
+      tone: "violet"
+    },
+    {
+      id: "redaction",
+      label: "Redaction Guard",
+      value: formatSeconds(state.settingsDraft.secretAutoHideMs),
+      detail: "Current auto-hide window for revealed protected values.",
+      tone: "amber"
+    },
+    {
+      id: "risk",
+      label: "Risk At Threshold",
+      value: `${riskAtThreshold} / ${snapshot.actions.length}`,
+      detail: `${formatTitleCase(
+        state.settingsDraft.actionRiskThreshold
+      )} and higher actions, with ${openActions} currently open.`,
+      tone: riskAtThreshold > 0 ? "amber" : "slate"
+    },
+    {
+      id: "sources",
+      label: "Observed Sources",
+      value: `${observedSourceCount} / ${runtimeSources.length}`,
+      detail: "Runtime source visibility inferred from event origins and metadata.",
+      tone: observedSourceCount > 0 ? "plum" : "slate"
+    }
+  ];
+}
+
+function createSettingsView(
+  snapshot: SubMindStoreSnapshot,
+  state: ShellUiState,
+  activeProject: Project | null,
+  scope: AppScope,
+  secretProtection: SecretProtectionModel
+): SubMindShellViewModel["settings"] {
+  const profile = snapshot.profiles[0] ?? null;
+  const currentPrimaryScreen = formatTitleCase(state.primaryScreen);
+  const activeSupportSurfaceLabel = state.activeSupportSurface
+    ? formatTitleCase(state.activeSupportSurface)
+    : "Closed";
+  const openActions = snapshot.actions.filter((actionItem) =>
+    ["pending", "in_progress", "blocked"].includes(actionItem.state)
+  ).length;
+  const activeMemory = snapshot.memory.filter(
+    (memoryItem) => memoryItem.status === "active"
+  ).length;
+  const pinnedMemory = snapshot.memory.filter((memoryItem) => memoryItem.isPinned).length;
+  const injectedGuidance = snapshot.guidance.filter(
+    (guidanceItem) => guidanceItem.state === "injected"
+  ).length;
+  const runtimeSources = createRuntimeSourceSettings(snapshot);
+  const controls = createSettingsControls(
+    snapshot,
+    state,
+    openActions,
+    injectedGuidance
+  );
+  const metrics = createSettingsMetrics(
+    snapshot,
+    state,
+    runtimeSources,
+    openActions
+  );
+
+  return {
+    title: "Settings",
+    body:
+      "Support surface for editable shell configuration, scope policy, integration visibility, and audit-facing metrics.",
+    posture: createCard(
+      "settings-posture",
+      "Settings Surface",
+      "Editable shell configuration, not a primary screen",
+      `Settings is open over ${currentPrimaryScreen}. Configuration changes apply to this shell session now; store-backed profile and project settings can persist them later.`,
+      "slate",
+      [
+        "support surface",
+        "session editable",
+        `${pluralize(snapshot.projects.length, "project")}`,
+        `${pluralize(openActions, "open action")}`
+      ],
+      [
+        { label: "Return target", value: currentPrimaryScreen },
+        {
+          label: "Active scope",
+          value: scope === "project" ? "Project-focused" : "Global"
+        },
+        {
+          label: "Active project",
+          value: activeProject?.name ?? "None"
+        }
+      ]
+    ),
+    controls,
+    metrics,
+    detailCards: [
+      createCard(
+        "settings-detail-persistence",
+        "Persistence Boundary",
+        "Session-local until settings schema lands",
+        "The controls on this page update live shell behavior and derived Settings metrics. They do not claim durable profile or project persistence until the store contract adds explicit settings fields.",
+        "slate",
+        ["explicit boundary", "no silent persistence"]
+      ),
+      createCard(
+        "settings-detail-policy",
+        "Policy Posture",
+        formatTitleCase(state.settingsDraft.guidanceAggression),
+        `Guidance aggression is currently ${formatTitleCase(
+          state.settingsDraft.guidanceAggression
+        )}; checkpoint mode is ${formatTitleCase(
+          state.settingsDraft.checkpointMode
+        )}. These values give the future policy layer a clear control shape.`,
+        "violet",
+        [
+          `risk threshold ${formatTitleCase(state.settingsDraft.actionRiskThreshold)}`,
+          `stack ${formatTitleCase(state.settingsDraft.projectStackDensity)}`
+        ]
+      ),
+      createCard(
+        "settings-detail-audit",
+        "Audit Guardrails",
+        `${pluralize(openActions, "open action")}`,
+        `Action risk metrics count ${formatTitleCase(
+          state.settingsDraft.actionRiskThreshold
+        )} and higher. Secrets auto-hide after ${formatSeconds(
+          state.settingsDraft.secretAutoHideMs
+        )}.`,
+        openActions > 0 ? "amber" : "slate",
+        [`${pluralize(activeMemory, "active memory")}`, `${pluralize(injectedGuidance, "injected guidance")}`]
+      )
+    ],
+    sections: [
+      {
+        id: "operator-shell",
+        title: "Operator Shell",
+        body:
+          "Current shell controls and navigation boundaries for the desktop operator console.",
+        rows: [
+          createSettingsRow(
+            "layout-mode",
+            "Layout mode",
+            formatTitleCase(state.layoutMode),
+            "The current shell mode is live UI state. Operator remains the v1 priority while Focus and Tab stay as reduced layout modes.",
+            "Live",
+            "plum"
+          ),
+          createSettingsRow(
+            "primary-screens",
+            "Primary screens",
+            primaryScreens.map(formatTitleCase).join(" / "),
+            "The locked primary screens stay Dashboard, Sessions, Memory, Guidance, and Actions. Settings opens outside that navigation as a support surface.",
+            "Locked",
+            "slate"
+          ),
+          createSettingsRow(
+            "support-surface",
+            "Support surface",
+            activeSupportSurfaceLabel,
+            `Closing Settings returns to ${currentPrimaryScreen} without changing the selected or focused project.`,
+            state.activeSupportSurface ? "Open" : "Closed",
+            state.activeSupportSurface ? "violet" : "slate"
+          )
+        ]
+      },
+      {
+        id: "scope-launch",
+        title: "Scope And Launch",
+        body:
+          "Scope is derived from selection/focus state and stays separate from core project identity.",
+        rows: [
+          createSettingsRow(
+            "scope-mode",
+            "Scope mode",
+            scope === "project" ? "Project-focused" : "Global",
+            "Focused project state narrows primary screens into one project. Selected project state keeps global context visible.",
+            "Derived",
+            scope === "project" ? "plum" : "violet"
+          ),
+          createSettingsRow(
+            "selected-project",
+            "Selected project",
+            state.selectedProjectId ? activeProject?.name ?? state.selectedProjectId : "None",
+            "Selection emphasizes a project without fully narrowing the app.",
+            "Runtime state",
+            state.selectedProjectId ? "violet" : "slate"
+          ),
+          createSettingsRow(
+            "focused-project",
+            "Focused project",
+            state.focusedProjectId ? activeProject?.name ?? state.focusedProjectId : "None",
+            "Focus narrows primary screen content into the project room while keeping the Project Stack visible.",
+            "Runtime state",
+            state.focusedProjectId ? "plum" : "slate"
+          )
+        ]
+      },
+      {
+        id: "cognition-control",
+        title: "Cognition And Control",
+        body:
+          "Snapshot-backed counts for retained knowledge, guidance decisions, action pressure, and redaction posture.",
+        rows: [
+          createSettingsRow(
+            "memory-retention",
+            "Retained memory",
+            `${pluralize(activeMemory, "active")} / ${pluralize(pinnedMemory, "pinned")}`,
+            "Memory status and pinning are retained in the store; edits remain visibly curated elsewhere in the Memory screen.",
+            "Snapshot",
+            "violet"
+          ),
+          createSettingsRow(
+            "guidance-state",
+            "Guidance injection",
+            `${pluralize(injectedGuidance, "injected")} / ${pluralize(
+              snapshot.guidance.length,
+              "package"
+            )}`,
+            "Guidance settings are read-only here until tuning policy gets persisted profile or project settings.",
+            "Read only",
+            injectedGuidance > 0 ? "plum" : "slate"
+          ),
+          createSettingsRow(
+            "action-pressure",
+            "Action pressure",
+            `${pluralize(openActions, "open")} / ${pluralize(
+              snapshot.actions.length,
+              "total"
+            )}`,
+            "Action risk, state, and audit details remain controlled from the Actions screen.",
+            openActions > 0 ? "Needs review" : "Clear",
+            openActions > 0 ? "amber" : "slate"
+          ),
+          createSettingsRow(
+            "secret-window",
+            "Secret reveal window",
+            formatSeconds(secretProtection.autoHideMs),
+            "Visible redacted values are auto-hidden after the reveal window; full reveal capability is intentionally not enabled in this page.",
+            "Editable guardrail",
+            "amber"
+          )
+        ]
+      },
+      {
+        id: "profile-store",
+        title: "Profile And Store",
+        body:
+          "Current profile and snapshot repository facts. Persistent settings writes can attach here when the store contract lands.",
+        rows: [
+          createSettingsRow(
+            "active-profile",
+            "Active profile",
+            profile?.displayName ?? "Primary operator",
+            "The current shell is profile-bounded; richer workstyle meaning belongs in memory, not raw profile fields.",
+            "Snapshot",
+            "slate"
+          ),
+          createSettingsRow(
+            "project-count",
+            "Project inventory",
+            `${pluralize(snapshot.projects.length, "project")} / ${pluralize(
+              snapshot.sessions.length,
+              "session"
+            )}`,
+            "Projects remain stable workspace anchors. Selection and focus are not stored as project identity.",
+            "Snapshot",
+            "violet"
+          ),
+          createSettingsRow(
+            "snapshot-refresh",
+            "Snapshot refresh",
+            formatSeconds(state.settingsDraft.snapshotRefreshMs),
+            "The desktop shell refreshes snapshot data on the configured interval while the app is visible.",
+            "Live query",
+            "slate"
+          )
+        ]
+      }
+    ],
+    runtimeSources,
+    closeLabel: `Return to ${currentPrimaryScreen}`
+  };
 }
 
 export function createShellViewModel(
@@ -2969,10 +3791,12 @@ export function createShellViewModel(
   );
   const projectSearchQuery = state.projectSearchQuery.trim();
   const isProjectFiltering = projectSearchQuery.length > 0;
+  const isSettingsOpen = state.activeSupportSurface === "settings";
 
   return {
     layoutMode: state.layoutMode,
     primaryScreen: state.primaryScreen,
+    activeSupportSurface: state.activeSupportSurface,
     scope,
     activeProject,
     secretProtection,
@@ -2985,7 +3809,10 @@ export function createShellViewModel(
       metrics: [
         { label: "Scope", value: scope === "project" ? "project-focused" : "global" },
         { label: "Projects", value: String(viewSnapshot.projects.length) },
-        { label: "Screen", value: state.primaryScreen },
+        {
+          label: "Screen",
+          value: state.activeSupportSurface ?? state.primaryScreen
+        },
         activeProject
           ? {
               label: "Active",
@@ -3008,6 +3835,11 @@ export function createShellViewModel(
         id: layoutMode,
         label: layoutMode,
         isActive: state.layoutMode === layoutMode
+      })),
+      supportSurfaces: supportSurfaces.map((supportSurface) => ({
+        id: supportSurface,
+        label: supportSurface,
+        isActive: state.activeSupportSurface === supportSurface
       })),
       canFocusSelectedProject:
         !!state.selectedProjectId && state.focusedProjectId === null,
@@ -3036,21 +3868,27 @@ export function createShellViewModel(
       focusedContextCards: createFocusedContextCards(viewSnapshot, activeProject, state)
     },
     contentHeader: {
-      eyebrow:
-        scope === "project"
+      eyebrow: isSettingsOpen
+        ? "Settings / support surface"
+        : scope === "project"
           ? `${activeProject?.name ?? "Project"} / project-focused`
           : activeProject
             ? `${activeProject.name} / global selection`
             : "Global Dashboard",
-      title: {
-        dashboard: "Dashboard",
-        sessions: "Sessions",
-        memory: "Memory",
-        guidance: "Guidance",
-        actions: "Actions"
-      }[state.primaryScreen],
-      description:
-        activeProject && scope === "global"
+      title: isSettingsOpen
+        ? "Settings"
+        : {
+            dashboard: "Dashboard",
+            sessions: "Sessions",
+            memory: "Memory",
+            guidance: "Guidance",
+            actions: "Actions"
+          }[state.primaryScreen],
+      description: isSettingsOpen
+        ? `Support surface for shell behavior, scope policy, runtime integration visibility, and audit guardrails. Close it to return to ${formatTitleCase(
+            state.primaryScreen
+          )}.`
+        : activeProject && scope === "global"
           ? `${activeProject.name} is now magnetized: its trace, guidance, and recent changes are weighted above the wider board while the rest of the world stays visible.`
           : scope === "project"
             ? `${activeProject?.name ?? "This project"} is now the active project room: work trace, retained context, and control are narrowed here while the stack stays visible around the room.`
@@ -3058,13 +3896,20 @@ export function createShellViewModel(
       screens: primaryScreens.map((screen) => ({
         id: screen,
         label: screen,
-        isActive: state.primaryScreen === screen
+        isActive: !state.activeSupportSurface && state.primaryScreen === screen
       }))
     },
     dashboard: createDashboardView(viewSnapshot, state, activeProject),
     sessions: createSessionsView(viewSnapshot, state, activeProject),
     memory: createMemoryView(viewSnapshot, state, activeProject, viewOptions),
     guidance: createGuidanceView(viewSnapshot, state, activeProject),
-    actions: createActionsView(viewSnapshot, state, activeProject, viewOptions)
+    actions: createActionsView(viewSnapshot, state, activeProject, viewOptions),
+    settings: createSettingsView(
+      viewSnapshot,
+      state,
+      activeProject,
+      scope,
+      secretProtection
+    )
   };
 }

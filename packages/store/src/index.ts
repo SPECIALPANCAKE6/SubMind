@@ -9,11 +9,16 @@ import type {
   Profile,
   ProjectCollectionCounts,
   Project,
+  SettingsConfigDraft,
   Session,
   Task,
   Thread
 } from "@submind/shared-schemas";
-import { subMindExternalApiVersion } from "@submind/shared-schemas";
+import {
+  defaultSettingsConfigDraft,
+  normalizeSettingsConfig,
+  subMindExternalApiVersion
+} from "@submind/shared-schemas";
 import { redactSensitiveObject, redactSensitiveText } from "@submind/policy";
 
 export * from "./schema.js";
@@ -85,6 +90,8 @@ export interface ProjectExportQueryInput {
 
 export interface SubMindRepository {
   getSnapshot(): Promise<SubMindStoreSnapshot>;
+  getSettingsConfig(): Promise<SettingsConfigDraft>;
+  updateSettingsConfig(input: SettingsConfigDraft): Promise<SettingsConfigDraft>;
   searchProjects(input?: ProjectSearchInput): Promise<ExternalProjectSummary[]>;
   getProjectExport(input: ProjectExportQueryInput): Promise<ExternalProjectExport | null>;
   getEventHistory(input?: EventHistoryQueryInput): Promise<Event[]>;
@@ -606,10 +613,18 @@ export function createPreviewRepository(
   snapshot: SubMindStoreSnapshot = createPreviewStoreSnapshot()
 ): SubMindRepository {
   let liveSnapshot = cloneStoreSnapshot(snapshot);
+  let liveSettingsConfig = { ...defaultSettingsConfigDraft };
 
   return {
     async getSnapshot() {
       return cloneStoreSnapshot(liveSnapshot);
+    },
+    async getSettingsConfig() {
+      return { ...liveSettingsConfig };
+    },
+    async updateSettingsConfig(input) {
+      liveSettingsConfig = normalizeSettingsConfig(input);
+      return { ...liveSettingsConfig };
     },
     async searchProjects(input = {}) {
       return structuredClone(searchProjects(liveSnapshot, input));

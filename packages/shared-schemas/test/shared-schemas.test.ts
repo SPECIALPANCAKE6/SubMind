@@ -4,11 +4,16 @@ import {
   contextDatumKinds,
   contextSourceEntityKinds,
   coreEntityKinds,
+  defaultSettingsConfigDraft,
   eventOrigins,
   eventNodeCategories,
   eventTaxonomy,
+  normalizeSettingsConfig,
   projectStackInteractionRules,
-  projectStackTransitions
+  projectStackTransitions,
+  guidanceAggressionModes,
+  checkpointModes,
+  projectStackDensities
 } from "../src/index";
 
 describe("shared schemas", () => {
@@ -80,5 +85,33 @@ describe("shared schemas", () => {
       "FileChange",
       "ActionItem"
     ]);
+  });
+
+  it("defines and normalizes the settings config contract", () => {
+    expect(guidanceAggressionModes).toEqual([
+      "restrained",
+      "balanced",
+      "assertive"
+    ]);
+    expect(checkpointModes).toEqual([
+      "immediate",
+      "debounced",
+      "manual_review"
+    ]);
+    expect(projectStackDensities).toEqual([
+      "compact",
+      "balanced",
+      "expanded"
+    ]);
+    expect(normalizeSettingsConfig({
+      ...defaultSettingsConfigDraft,
+      snapshotRefreshMs: 90_000,
+      secretAutoHideMs: 1_000,
+      guidanceAggression: "assertive"
+    })).toMatchObject({
+      snapshotRefreshMs: 60_000,
+      secretAutoHideMs: 5_000,
+      guidanceAggression: "assertive"
+    });
   });
 });

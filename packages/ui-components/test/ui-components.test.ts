@@ -7,6 +7,7 @@ import {
   clearShellProjectSelection,
   createInitialShellUiState,
   createShellViewModel,
+  openShellSupportSurface,
   selectShellAction,
   selectShellGuidance,
   selectShellMemory,
@@ -26,6 +27,10 @@ describe("ui-components", () => {
   const noopActions = {
     onLayoutModeChange: () => undefined,
     onPrimaryScreenChange: () => undefined,
+    onOpenSettings: () => undefined,
+    onCloseSupportSurface: () => undefined,
+    onSettingsConfigChange: () => undefined,
+    onResetSettingsConfig: () => undefined,
     onSelectProject: () => undefined,
     onToggleProjectFocus: () => undefined,
     onFocusSelectedProject: () => undefined,
@@ -157,6 +162,38 @@ describe("ui-components", () => {
     expect(markup).toContain("Context Inspector");
     expect(markup).toContain("sm-context-inspector-stack");
     expect(markup).toContain("Open Guidance");
+  });
+
+  it("renders settings as a support surface with runtime and return controls", () => {
+    const snapshot = createPreviewStoreSnapshot();
+    const state = openShellSupportSurface(
+      setShellPrimaryScreen(createInitialShellUiState(snapshot), "actions"),
+      "settings"
+    );
+    const markup = renderToStaticMarkup(
+      createElement(SubMindShell, {
+        viewModel: createShellViewModel(snapshot, state),
+        actions: noopActions
+      })
+    );
+
+    expect(markup).toContain("Settings / support surface");
+    expect(markup).toContain("Editable shell configuration, not a primary screen");
+    expect(markup).toContain("Editable shell settings");
+    expect(markup).toContain("Session editable");
+    expect(markup).toContain("type=\"number\"");
+    expect(markup).toContain("<select");
+    expect(markup).toContain("Details / Metrics");
+    expect(markup).toContain("Configuration impact");
+    expect(markup).toContain("Reset");
+    expect(markup).toContain("Observed integration trace");
+    expect(markup).toContain("Operator Shell");
+    expect(markup).toContain("Scope And Launch");
+    expect(markup).toContain("Cognition And Control");
+    expect(markup).toContain("Return to Actions");
+    expect(markup).toContain("Close Settings");
+    expect(markup).toContain('data-primary-screen="settings"');
+    expect(markup).toContain('data-support-surface="settings"');
   });
 
   it("renders guidance posture and evidence labels in the guidance screen", () => {

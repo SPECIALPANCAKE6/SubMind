@@ -1,5 +1,10 @@
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
+export const appStateTable = sqliteTable("app_state", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull()
+});
+
 export const profilesTable = sqliteTable("profiles", {
   id: text("id").primaryKey(),
   createdAt: text("created_at").notNull(),
@@ -160,6 +165,7 @@ export const actionItemsTable = sqliteTable("action_items", {
 });
 
 export const subMindSqliteSchema = {
+  appStateTable,
   profilesTable,
   projectsTable,
   sessionsTable,

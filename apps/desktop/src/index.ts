@@ -1,4 +1,5 @@
 import { describeRuntimeContext } from "@submind/core";
+import type { SettingsConfigDraft } from "@submind/shared-schemas";
 import { redactSensitiveText, starterSubagents } from "@submind/policy";
 import {
   createStoreSnapshotFromCopilotRuntimeFeed,
@@ -153,6 +154,12 @@ export function createDesktopRepository(): SubMindRepository {
   return {
     async getSnapshot() {
       return (await resolveRepository()).getSnapshot();
+    },
+    async getSettingsConfig() {
+      return (await resolveRepository()).getSettingsConfig();
+    },
+    async updateSettingsConfig(input: SettingsConfigDraft) {
+      return (await resolveRepository()).updateSettingsConfig(input);
     },
     async searchProjects(input?: ProjectSearchInput) {
       return (await resolveRepository()).searchProjects(input);

@@ -1,11 +1,20 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { SubMindShell } from "@submind/ui-components";
-import type { MemoryItem } from "@submind/shared-schemas";
+import {
+  defaultSettingsConfigDraft,
+  normalizeSettingsConfig,
+  type MemoryItem,
+  type SettingsConfigDraft,
+  type SettingsConfigKey,
+  type SettingsConfigValue
+} from "@submind/shared-schemas";
 import {
   type ActionTransitionState,
+  createSettingsConfigQueryOptions,
   createShellSnapshotQueryOptions,
   createShellViewModel,
+  useSettingsConfigQuery,
   useShellSnapshotQuery,
   useShellStore
 } from "@submind/ui-state";
@@ -67,7 +76,12 @@ function ErrorState({ message }: { message: string }) {
 
 export function DesktopApp() {
   const queryClient = useQueryClient();
-  const snapshotQuery = useShellSnapshotQuery(desktopRepository);
+  const settingsDraft = useShellStore((state) => state.settingsDraft);
+  const settingsConfigQuery = useSettingsConfigQuery(desktopRepository);
+  const snapshotQuery = useShellSnapshotQuery(
+    desktopRepository,
+    settingsDraft.snapshotRefreshMs
+  );
   const [actionOutcomeDraft, setActionOutcomeDraft] = useState("");
   const [memorySummaryDraft, setMemorySummaryDraft] = useState("");
   const [memoryContentDraft, setMemoryContentDraft] = useState("");
@@ -79,6 +93,9 @@ export function DesktopApp() {
   );
   const layoutMode = useShellStore((state) => state.layoutMode);
   const primaryScreen = useShellStore((state) => state.primaryScreen);
+  const activeSupportSurface = useShellStore(
+    (state) => state.activeSupportSurface
+  );
   const selectedProjectId = useShellStore((state) => state.selectedProjectId);
   const focusedProjectId = useShellStore((state) => state.focusedProjectId);
   const projectSearchQuery = useShellStore((state) => state.projectSearchQuery);
@@ -92,6 +109,16 @@ export function DesktopApp() {
     snapshotQuery.data?.memory.find((memory) => memory.id === activeMemoryId) ?? null;
   const setLayoutMode = useShellStore((state) => state.setLayoutMode);
   const setPrimaryScreen = useShellStore((state) => state.setPrimaryScreen);
+  const openSupportSurface = useShellStore(
+    (state) => state.openSupportSurface
+  );
+  const closeSupportSurface = useShellStore(
+    (state) => state.closeSupportSurface
+  );
+  const resetSettingsDraft = useShellStore(
+    (state) => state.resetSettingsDraft
+  );
+  const setSettingsDraft = useShellStore((state) => state.setSettingsDraft);
   const selectProject = useShellStore((state) => state.selectProject);
   const toggleProjectFocus = useShellStore((state) => state.toggleProjectFocus);
   const focusSelectedProject = useShellStore(
@@ -140,11 +167,29 @@ export function DesktopApp() {
     }
   });
 
+  const updateSettingsMutation = useMutation({
+    mutationFn: async (input: SettingsConfigDraft) =>
+      desktopRepository.updateSettingsConfig(input),
+    onSuccess(settingsConfig) {
+      setSettingsDraft(settingsConfig);
+      queryClient.setQueryData(
+        createSettingsConfigQueryOptions(desktopRepository).queryKey,
+        settingsConfig
+      );
+    }
+  });
+
   useEffect(() => {
     if (snapshotQuery.data) {
       initializeFromSnapshot(snapshotQuery.data);
     }
   }, [initializeFromSnapshot, snapshotQuery.data]);
+
+  useEffect(() => {
+    if (settingsConfigQuery.data) {
+      setSettingsDraft(settingsConfigQuery.data);
+    }
+  }, [setSettingsDraft, settingsConfigQuery.data]);
 
   useEffect(() => {
     setActionOutcomeDraft(activeAction?.actualOutcome ?? "");
@@ -170,10 +215,10 @@ export function DesktopApp() {
 
     const timeoutId = window.setTimeout(() => {
       hideSecretTarget();
-    }, 30_000);
+    }, settingsDraft.secretAutoHideMs);
 
     return () => window.clearTimeout(timeoutId);
-  }, [hideSecretTarget, secretRevealTarget]);
+  }, [hideSecretTarget, secretRevealTarget, settingsDraft.secretAutoHideMs]);
 
   if (snapshotQuery.error) {
     return <ErrorState message={snapshotQuery.error.message} />;
@@ -186,6 +231,8 @@ export function DesktopApp() {
   const shellState = {
     layoutMode,
     primaryScreen,
+    activeSupportSurface,
+    settingsDraft,
     selectedProjectId,
     focusedProjectId,
     projectSearchQuery,
@@ -234,6 +281,26 @@ export function DesktopApp() {
     });
   }
 
+  function handleSettingsConfigChange(
+    key: SettingsConfigKey,
+    value: SettingsConfigValue
+  ) {
+    const nextSettingsConfig = normalizeSettingsConfig({
+      ...settingsDraft,
+      [key]: value
+    });
+
+    setSettingsDraft(nextSettingsConfig);
+    updateSettingsMutation.mutate(nextSettingsConfig);
+  }
+
+  function handleResetSettingsConfig() {
+    const nextSettingsConfig = { ...defaultSettingsConfigDraft };
+
+    resetSettingsDraft();
+    updateSettingsMutation.mutate(nextSettingsConfig);
+  }
+
   return (
     <SubMindShell
       viewModel={createShellViewModel(snapshotQuery.data, shellState, {
@@ -250,6 +317,10 @@ export function DesktopApp() {
       actions={{
         onLayoutModeChange: setLayoutMode,
         onPrimaryScreenChange: setPrimaryScreen,
+        onOpenSettings: () => openSupportSurface("settings"),
+        onCloseSupportSurface: closeSupportSurface,
+        onSettingsConfigChange: handleSettingsConfigChange,
+        onResetSettingsConfig: handleResetSettingsConfig,
         onSelectProject: selectProject,
         onToggleProjectFocus: toggleProjectFocus,
         onFocusSelectedProject: focusSelectedProject,

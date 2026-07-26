@@ -24,12 +24,24 @@ import type {
   SessionThreadItemModel,
   ShellCardModel,
   SubMindShellViewModel,
+  SupportSurface,
   TraceEventItemModel
 } from "@submind/ui-state";
+import type {
+  SettingsConfigKey,
+  SettingsConfigValue
+} from "@submind/shared-schemas";
 
 export interface SubMindShellActions {
   onLayoutModeChange: (layoutMode: LayoutMode) => void;
   onPrimaryScreenChange: (screen: PrimaryScreen) => void;
+  onOpenSettings: () => void;
+  onCloseSupportSurface: () => void;
+  onSettingsConfigChange: (
+    key: SettingsConfigKey,
+    value: SettingsConfigValue
+  ) => void;
+  onResetSettingsConfig: () => void;
   onSelectProject: (projectId: string) => void;
   onToggleProjectFocus: (projectId: string) => void;
   onFocusSelectedProject: () => void;
@@ -192,6 +204,7 @@ function getThreadSourcePillClass(sourceLabel: string): string {
     "sm-status-pill sm-status-pill--origin",
     normalized === "codex" && "sm-status-pill--origin-codex",
     normalized === "copilot" && "sm-status-pill--origin-copilot",
+    normalized === "hermes" && "sm-status-pill--origin-hermes",
     normalized === "mixed" && "sm-status-pill--origin-mixed",
     normalized === "unknown" && "sm-status-pill--origin-unknown"
   );
@@ -1008,10 +1021,14 @@ function ActionCard({
 
 function ScreenSwitcher({
   screens,
-  onSelect
+  activeSupportSurface,
+  onSelect,
+  onCloseSupportSurface
 }: {
   screens: SubMindShellViewModel["contentHeader"]["screens"];
+  activeSupportSurface: SupportSurface | null;
   onSelect: (screen: PrimaryScreen) => void;
+  onCloseSupportSurface: () => void;
 }) {
   return (
     <nav className="sm-screen-switcher" aria-label="Primary screens">
@@ -1028,6 +1045,15 @@ function ScreenSwitcher({
           {protectedText(titleCase(screen.label))}
         </button>
       ))}
+      {activeSupportSurface ? (
+        <button
+          type="button"
+          onClick={onCloseSupportSurface}
+          className="sm-screen-switcher__button sm-screen-switcher__button--active sm-screen-switcher__button--support"
+        >
+          {protectedText(`Close ${titleCase(activeSupportSurface)}`)}
+        </button>
+      ) : null}
     </nav>
   );
 }
@@ -2017,10 +2043,273 @@ function renderActions(
   );
 }
 
+function SettingsRow({
+  row
+}: {
+  row: SubMindShellViewModel["settings"]["sections"][number]["rows"][number];
+}) {
+  return (
+    <article data-tone={row.tone} className="sm-settings-row">
+      <div className="sm-settings-row__main">
+        <div className="sm-settings-row__heading">
+          <span className="sm-settings-row__label">
+            {protectedText(row.label)}
+          </span>
+          <span className="sm-settings-row__value">
+            {protectedText(row.value)}
+          </span>
+        </div>
+        <p className="sm-settings-row__description">
+          {protectedText(row.description)}
+        </p>
+      </div>
+      <span className="sm-settings-row__status">
+        {protectedText(row.statusLabel)}
+      </span>
+    </article>
+  );
+}
+
+function RuntimeSourceCard({
+  source
+}: {
+  source: SubMindShellViewModel["settings"]["runtimeSources"][number];
+}) {
+  return (
+    <article data-tone={source.tone} className="sm-settings-source">
+      <div className="sm-settings-source__header">
+        <div>
+          <p className="sm-label">{protectedText(source.statusLabel)}</p>
+          <h4>{protectedText(source.label)}</h4>
+        </div>
+        <span className="sm-settings-source__value">
+          {protectedText(source.value)}
+        </span>
+      </div>
+      <p>{protectedText(source.description)}</p>
+    </article>
+  );
+}
+
+function SettingsMetricTile({
+  metric
+}: {
+  metric: SubMindShellViewModel["settings"]["metrics"][number];
+}) {
+  return (
+    <article data-tone={metric.tone} className="sm-settings-metric">
+      <span className="sm-settings-metric__label">
+        {protectedText(metric.label)}
+      </span>
+      <strong>{protectedText(metric.value)}</strong>
+      <p>{protectedText(metric.detail)}</p>
+    </article>
+  );
+}
+
+function SettingsControl({
+  control,
+  actions
+}: {
+  control: SubMindShellViewModel["settings"]["controls"][number];
+  actions: SubMindShellActions;
+}) {
+  return (
+    <article data-tone={control.tone} className="sm-settings-control">
+      <div className="sm-settings-control__main">
+        <div className="sm-settings-control__header">
+          <div>
+            <p className="sm-label">{protectedText(control.statusLabel)}</p>
+            <h4>{protectedText(control.label)}</h4>
+          </div>
+          <span className="sm-settings-control__value">
+            {protectedText(control.valueLabel)}
+          </span>
+        </div>
+        <p className="sm-settings-control__description">
+          {protectedText(control.description)}
+        </p>
+        <div className="sm-settings-control__metrics">
+          {control.metrics.map((metric) => (
+            <span key={`${control.id}:${metric.label}`}>
+              {protectedText(`${metric.label}: ${metric.value}`)}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {control.control.kind === "number" ? (
+        <label className="sm-settings-field">
+          <span>{protectedText(control.control.unitLabel)}</span>
+          <input
+            type="number"
+            min={control.control.min}
+            max={control.control.max}
+            step={control.control.step}
+            value={control.value}
+            onChange={(event) =>
+              actions.onSettingsConfigChange(
+                control.id,
+                Number(event.currentTarget.value)
+              )
+            }
+          />
+        </label>
+      ) : (
+        <label className="sm-settings-field">
+          <span>mode</span>
+          <select
+            value={control.value}
+            onChange={(event) =>
+              actions.onSettingsConfigChange(
+                control.id,
+                event.currentTarget.value as SettingsConfigValue
+              )
+            }
+          >
+            {control.control.options.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+    </article>
+  );
+}
+
+function renderSettings(
+  viewModel: SubMindShellViewModel,
+  actions: SubMindShellActions
+) {
+  return (
+    <div className="sm-settings-shell">
+      <div className="sm-settings-lead">
+        <ToneCard
+          card={viewModel.settings.posture}
+          size="detail"
+          emphasized
+          className="sm-settings-hero"
+        />
+        <Surface variant="muted" className="sm-settings-runtime">
+          <div className="sm-settings-section__header">
+            <div>
+              <p className="sm-label">Runtime Sources</p>
+              <h3 className="sm-display">Observed integration trace</h3>
+            </div>
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.settings.runtimeSources.length} sources
+            </span>
+          </div>
+          <div className="sm-settings-source-grid">
+            {viewModel.settings.runtimeSources.map((source) => (
+              <RuntimeSourceCard key={source.sourceId} source={source} />
+            ))}
+          </div>
+        </Surface>
+
+        <Surface variant="panel" className="sm-settings-metrics-panel">
+          <div className="sm-settings-section__header">
+            <div>
+              <p className="sm-label">Details / Metrics</p>
+              <h3 className="sm-display">Configuration impact</h3>
+            </div>
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.settings.metrics.length} metrics
+            </span>
+          </div>
+          <div className="sm-settings-metric-grid">
+            {viewModel.settings.metrics.map((metric) => (
+              <SettingsMetricTile key={metric.id} metric={metric} />
+            ))}
+          </div>
+          <div className="sm-settings-detail-grid">
+            {viewModel.settings.detailCards.map((card) => (
+              <ToneCard key={card.id} card={card} size="stack" />
+            ))}
+          </div>
+        </Surface>
+      </div>
+
+      <div className="sm-settings-section-list">
+        <Surface variant="elevated" className="sm-settings-section sm-settings-config">
+          <div className="sm-settings-section__header">
+            <div>
+              <p className="sm-label">Configuration</p>
+              <h3 className="sm-display">Editable shell settings</h3>
+            </div>
+            <button
+              type="button"
+              onClick={actions.onResetSettingsConfig}
+              className="sm-settings-reset"
+            >
+              Reset
+            </button>
+          </div>
+          <p className="sm-settings-section__body">
+            These controls update the current shell session immediately. Durable
+            profile or project settings can use the same shape once persistence lands.
+          </p>
+          <div className="sm-settings-control-list">
+            {viewModel.settings.controls.map((control) => (
+              <SettingsControl
+                key={control.id}
+                control={control}
+                actions={actions}
+              />
+            ))}
+          </div>
+        </Surface>
+
+        {viewModel.settings.sections.map((section) => (
+          <Surface
+            key={section.id}
+            variant="panel"
+            className="sm-settings-section"
+          >
+            <div className="sm-settings-section__header">
+              <div>
+                <p className="sm-label">Settings</p>
+                <h3 className="sm-display">{protectedText(section.title)}</h3>
+              </div>
+              <span className="sm-chip sm-chip--subtle">
+                {section.rows.length} rows
+              </span>
+            </div>
+            <p className="sm-settings-section__body">
+              {protectedText(section.body)}
+            </p>
+            <div className="sm-settings-row-list">
+              {section.rows.map((row) => (
+                <SettingsRow key={row.id} row={row} />
+              ))}
+            </div>
+          </Surface>
+        ))}
+      </div>
+
+      <div className="sm-settings-footer">
+        <button
+          type="button"
+          onClick={actions.onCloseSupportSurface}
+          className="sm-settings-return"
+        >
+          {protectedText(viewModel.settings.closeLabel)}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function renderActiveScreen(
   viewModel: SubMindShellViewModel,
   actions: SubMindShellActions
 ) {
+  if (viewModel.activeSupportSurface === "settings") {
+    return renderSettings(viewModel, actions);
+  }
+
   switch (viewModel.primaryScreen) {
     case "dashboard":
       return renderDashboard(viewModel, actions);
@@ -2078,6 +2367,26 @@ export function SubMindShell({
                     )}
                   >
                     {protectedText(layoutMode.label)}
+                  </button>
+                ))}
+              </div>
+              <div className="sm-command-tools">
+                {viewModel.commandStrip.supportSurfaces.map((supportSurface) => (
+                  <button
+                    key={supportSurface.id}
+                    type="button"
+                    onClick={() =>
+                      supportSurface.isActive
+                        ? actions.onCloseSupportSurface()
+                        : actions.onOpenSettings()
+                    }
+                    className={cx(
+                      "sm-command-tools__button",
+                      supportSurface.isActive &&
+                        "sm-command-tools__button--active"
+                    )}
+                  >
+                    {protectedText(titleCase(supportSurface.label))}
                   </button>
                 ))}
               </div>
@@ -2172,10 +2481,16 @@ export function SubMindShell({
                         )}
                       >
                         {dashboardMode === "focused"
-                          ? "Project room"
+                          ? viewModel.activeSupportSurface
+                            ? "Support surface"
+                            : "Project room"
                           : dashboardMode === "selected"
-                            ? "Magnetized"
-                            : "Broad command center"}
+                            ? viewModel.activeSupportSurface
+                              ? "Support surface"
+                              : "Magnetized"
+                            : viewModel.activeSupportSurface
+                              ? "Support surface"
+                              : "Broad command center"}
                       </span>
                     </div>
                     <h2 className="sm-display sm-workspace-title text-[clamp(1.65rem,2vw,2.2rem)] leading-none text-[var(--sm-text-strong)]">
@@ -2188,14 +2503,19 @@ export function SubMindShell({
                   <div className="sm-workspace-switcher">
                     <ScreenSwitcher
                       screens={viewModel.contentHeader.screens}
+                      activeSupportSurface={viewModel.activeSupportSurface}
                       onSelect={actions.onPrimaryScreenChange}
+                      onCloseSupportSurface={actions.onCloseSupportSurface}
                     />
                   </div>
                 </div>
               </div>
 
               <div
-                data-primary-screen={viewModel.primaryScreen}
+                data-primary-screen={
+                  viewModel.activeSupportSurface ?? viewModel.primaryScreen
+                }
+                data-support-surface={viewModel.activeSupportSurface ?? "none"}
                 className="sm-workspace-content"
               >
                 {renderActiveScreen(viewModel, actions)}

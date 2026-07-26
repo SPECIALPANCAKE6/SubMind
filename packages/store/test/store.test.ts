@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import { createStoreSnapshotFromCopilotRuntimeFeed } from "../../protocol-copilot/src/index";
 import { createStoreSnapshotFromCodexRuntimeFeed } from "../../protocol-codex/src/index";
+import { createStoreSnapshotFromHermesRuntimeFeed } from "../../protocol-hermes/src/index";
+import { defaultSettingsConfigDraft } from "../../shared-schemas/src/index";
 import {
   createSqliteRepository,
   createPreviewStoreSnapshot,
@@ -18,6 +20,7 @@ import {
   resolveProjectExternalExport,
   searchProjects,
   syncRuntimeSnapshotIntoDatabase,
+  subMindSqliteSchema,
   type SubMindStoreSnapshot
 } from "../src/index";
 
@@ -168,6 +171,10 @@ describe("store", () => {
     expect(snapshot.projects[0]).not.toHaveProperty("state");
     expect(snapshot.events[0]?.originType).toBeDefined();
     expect(snapshot.actions[0]?.riskLevel).toBeDefined();
+  });
+
+  it("exports app state as part of the sqlite schema", () => {
+    expect(subMindSqliteSchema).toHaveProperty("appStateTable");
   });
 
   it("sorts project sessions and resolves primary thread and task", () => {
@@ -358,6 +365,37 @@ describe("store", () => {
     expect(history[0]?.summary).toContain("Clarified the thin-shell rule");
   });
 
+  it("persists settings config in preview and sqlite repositories", async () => {
+    const previewRepository = createPreviewRepository(createPreviewStoreSnapshot());
+    const db = createSqliteTestAdapter();
+    const sqliteRepository = createSqliteRepository({ db });
+    const nextConfig = {
+      ...defaultSettingsConfigDraft,
+      snapshotRefreshMs: 90_000,
+      secretAutoHideMs: 1_000,
+      guidanceAggression: "assertive" as const,
+      actionRiskThreshold: "medium" as const
+    };
+
+    expect(await previewRepository.getSettingsConfig()).toEqual(
+      defaultSettingsConfigDraft
+    );
+
+    const previewSaved = await previewRepository.updateSettingsConfig(nextConfig);
+    const sqliteSaved = await sqliteRepository.updateSettingsConfig(nextConfig);
+    const sqliteReloaded = await createSqliteRepository({ db }).getSettingsConfig();
+
+    expect(previewSaved).toMatchObject({
+      snapshotRefreshMs: 60_000,
+      secretAutoHideMs: 5_000,
+      guidanceAggression: "assertive",
+      actionRiskThreshold: "medium"
+    });
+    expect(await previewRepository.getSettingsConfig()).toEqual(previewSaved);
+    expect(sqliteSaved).toEqual(previewSaved);
+    expect(sqliteReloaded).toEqual(previewSaved);
+  });
+
   it("replaces stale runtime project rows when the runtime snapshot is resynced", async () => {
     const db = createSqliteTestAdapter();
     const repository = createSqliteRepository({ db });
@@ -396,7 +434,7 @@ describe("store", () => {
     expect(snapshot.threads[0]?.projectId).toBe(currentProjectId);
   });
 
-  it("merges Codex and Copilot runtime snapshots onto the same project when the workspace matches", () => {
+  it("merges Codex, Copilot, and Hermes runtime snapshots onto the same project when the workspace matches", () => {
     const codexSnapshot = createStoreSnapshotFromCodexRuntimeFeed({
       profileName: "Operator",
       threads: [
@@ -448,16 +486,49 @@ describe("store", () => {
         }
       ]
     });
+    const hermesSnapshot = createStoreSnapshotFromHermesRuntimeFeed({
+      profileName: "Operator",
+      threads: [
+        {
+          id: "hermes-thread-1",
+          title: "Review SubMind bridge",
+          workspacePath:
+            "/mnt/c/Users/xtrem/OneDrive/Documents/codecraft/SubMind",
+          createdAt: 1774856904348,
+          updatedAt: 1774857543062,
+          latestUserMessage: "Check the neutral MCP bridge.",
+          modelName: "Hermes Agent",
+          modelId: "hermes-agent",
+          descriptorHints: ["mcp"],
+          turns: [
+            {
+              id: "turn-1",
+              timestamp: 1774857496782,
+              prompt: "Check the neutral MCP bridge.",
+              response: "The bridge can be registered by MCP-capable clients.",
+              modelId: "hermes-agent",
+              toolNames: [],
+              referencedFiles: [],
+              fileChanges: []
+            }
+          ]
+        }
+      ]
+    });
 
-    const merged = mergeStoreSnapshots([codexSnapshot, copilotSnapshot]);
+    const merged = mergeStoreSnapshots([
+      codexSnapshot,
+      copilotSnapshot,
+      hermesSnapshot
+    ]);
 
     expect(merged.projects).toHaveLength(1);
-    expect(merged.sessions).toHaveLength(2);
+    expect(merged.sessions).toHaveLength(3);
     expect(new Set(merged.sessions.map((session) => session.projectId))).toEqual(
       new Set([merged.projects[0]!.id])
     );
     expect(merged.projects[0]?.descriptors).toEqual(
-      expect.arrayContaining(["typescript", "tauri", "vscode", "copilot"])
+      expect.arrayContaining(["typescript", "tauri", "vscode", "copilot", "hermes"])
     );
   });
 });

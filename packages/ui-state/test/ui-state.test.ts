@@ -4,15 +4,19 @@ import {
   createPreviewRepository,
   createPreviewStoreSnapshot
 } from "../../store/src/index";
+import { defaultSettingsConfigDraft } from "../../shared-schemas/src/index";
 import {
   clearFocusedShellProject,
   clearShellProjectSelection,
   createInitialShellUiState,
   createShellViewModel,
+  closeShellSupportSurface,
   focusSelectedShellProject,
   getProjectCardState,
   getShellScope,
+  openShellSupportSurface,
   revealShellSecretTarget,
+  resetShellSettingsDraft,
   selectShellAction,
   selectShellGuidance,
   selectShellMemory,
@@ -21,7 +25,8 @@ import {
   selectShellThread,
   setShellProjectSearchQuery,
   setShellPrimaryScreen,
-  toggleShellProjectFocus
+  toggleShellProjectFocus,
+  updateShellSettingsDraft
 } from "../src/index";
 
 describe("ui-state", () => {
@@ -31,6 +36,7 @@ describe("ui-state", () => {
 
     expect(state.layoutMode).toBe("operator");
     expect(state.primaryScreen).toBe("dashboard");
+    expect(state.activeSupportSurface).toBeNull();
     expect(state.selectedProjectId).toBe("project-submind");
     expect(getShellScope(state)).toBe("global");
     expect(getProjectCardState(state, "project-submind")).toBe("selected");
@@ -90,6 +96,77 @@ describe("ui-state", () => {
     expect(screen.activeGuidanceId).toBe("guidance-submind-stack");
     expect(screen.activeActionId).toBe("action-submind-schema");
     expect(screen.primaryScreen).toBe("actions");
+  });
+
+  it("opens settings as a support surface without changing the primary screen", () => {
+    const snapshot = createPreviewStoreSnapshot();
+    const actionsState = setShellPrimaryScreen(
+      createInitialShellUiState(snapshot),
+      "actions"
+    );
+    const settingsState = openShellSupportSurface(actionsState, "settings");
+    const settingsViewModel = createShellViewModel(snapshot, settingsState);
+    const closedState = closeShellSupportSurface(settingsState);
+    const memoryState = setShellPrimaryScreen(settingsState, "memory");
+
+    expect(settingsState.primaryScreen).toBe("actions");
+    expect(settingsState.activeSupportSurface).toBe("settings");
+    expect(settingsViewModel.contentHeader.title).toBe("Settings");
+    expect(settingsViewModel.contentHeader.description).toContain(
+      "return to Actions"
+    );
+    expect(settingsViewModel.contentHeader.screens.every((screen) => !screen.isActive)).toBe(
+      true
+    );
+    expect(settingsViewModel.settings.closeLabel).toBe("Return to Actions");
+    expect(settingsViewModel.settings.sections[0]?.rows[1]?.value).toContain(
+      "Dashboard / Sessions / Memory / Guidance / Actions"
+    );
+    expect(settingsViewModel.settings.controls[0]?.label).toBe("Snapshot refresh");
+    expect(settingsViewModel.settings.metrics[0]?.value).toBe("5 seconds");
+    expect(settingsViewModel.settings.detailCards[0]?.title).toContain(
+      "Session-local"
+    );
+    expect(closedState.primaryScreen).toBe("actions");
+    expect(closedState.activeSupportSurface).toBeNull();
+    expect(memoryState.primaryScreen).toBe("memory");
+    expect(memoryState.activeSupportSurface).toBeNull();
+  });
+
+  it("edits settings configuration values and resets the session draft", () => {
+    const snapshot = createPreviewStoreSnapshot();
+    const initial = createInitialShellUiState(snapshot);
+    const refreshed = updateShellSettingsDraft(
+      initial,
+      "snapshotRefreshMs",
+      90_000
+    );
+    const secretWindow = updateShellSettingsDraft(
+      refreshed,
+      "secretAutoHideMs",
+      2_000
+    );
+    const guidance = updateShellSettingsDraft(
+      secretWindow,
+      "guidanceAggression",
+      "assertive"
+    );
+    const risk = updateShellSettingsDraft(guidance, "actionRiskThreshold", "medium");
+    const settingsViewModel = createShellViewModel(
+      snapshot,
+      openShellSupportSurface(risk, "settings")
+    );
+    const reset = resetShellSettingsDraft(risk);
+
+    expect(refreshed.settingsDraft.snapshotRefreshMs).toBe(60_000);
+    expect(secretWindow.settingsDraft.secretAutoHideMs).toBe(5_000);
+    expect(guidance.settingsDraft.guidanceAggression).toBe("assertive");
+    expect(settingsViewModel.settings.controls.some((control) =>
+      control.id === "guidanceAggression" && control.valueLabel === "Assertive"
+    )).toBe(true);
+    expect(settingsViewModel.settings.metrics[0]?.value).toBe("60 seconds");
+    expect(settingsViewModel.secretProtection.autoHideMs).toBe(5_000);
+    expect(reset.settingsDraft).toEqual(defaultSettingsConfigDraft);
   });
 
   it("derives primary screen content around the active scope", () => {
@@ -164,7 +241,7 @@ describe("ui-state", () => {
     expect(viewModel.sessions.linkedContext[2]?.kind).toBe("memory");
   });
 
-  it("derives explicit thread source labels for Codex and Copilot threads", () => {
+  it("derives explicit thread source labels for Codex, Copilot, and Hermes threads", () => {
     const baseSnapshot = createPreviewStoreSnapshot();
     const snapshot = {
       ...baseSnapshot,
@@ -180,6 +257,17 @@ describe("ui-state", () => {
           startedAt: "2026-03-30T10:05:00.000Z",
           createdAt: "2026-03-30T10:05:00.000Z",
           updatedAt: "2026-03-30T10:12:00.000Z"
+        },
+        {
+          kind: "Session" as const,
+          id: "session-hermes-review",
+          profileId: "profile-operator",
+          projectId: "project-submind",
+          status: "active" as const,
+          summary: "Hermes-assisted review of the neutral MCP bridge.",
+          startedAt: "2026-03-30T10:20:00.000Z",
+          createdAt: "2026-03-30T10:20:00.000Z",
+          updatedAt: "2026-03-30T10:26:00.000Z"
         }
       ],
       threads: [
@@ -194,6 +282,17 @@ describe("ui-state", () => {
           summary: "Use Copilot chat to inspect shell density and polish.",
           createdAt: "2026-03-30T10:05:00.000Z",
           updatedAt: "2026-03-30T10:12:00.000Z"
+        },
+        {
+          kind: "Thread" as const,
+          id: "thread-hermes-review",
+          sessionId: "session-hermes-review",
+          projectId: "project-submind",
+          title: "Hermes MCP bridge review",
+          status: "open" as const,
+          summary: "Use Hermes to inspect the neutral context bridge.",
+          createdAt: "2026-03-30T10:20:00.000Z",
+          updatedAt: "2026-03-30T10:26:00.000Z"
         }
       ],
       events: [
@@ -215,6 +314,24 @@ describe("ui-state", () => {
           },
           createdAt: "2026-03-30T10:05:00.000Z",
           updatedAt: "2026-03-30T10:05:00.000Z"
+        },
+        {
+          kind: "Event" as const,
+          id: "event-hermes-thread-opened",
+          projectId: "project-submind",
+          sessionId: "session-hermes-review",
+          threadId: "thread-hermes-review",
+          originType: "system" as const,
+          eventType: "hermes_thread_opened",
+          category: "lifecycle" as const,
+          nodeCategory: "anchor" as const,
+          timestamp: "2026-03-30T10:20:00.000Z",
+          summary: "Opened Hermes thread for MCP bridge review.",
+          metadata: {
+            source: "hermes"
+          },
+          createdAt: "2026-03-30T10:20:00.000Z",
+          updatedAt: "2026-03-30T10:20:00.000Z"
         }
       ]
     };
@@ -233,6 +350,13 @@ describe("ui-state", () => {
         "sessions"
       )
     );
+    const hermesViewModel = createShellViewModel(
+      snapshot,
+      setShellPrimaryScreen(
+        selectShellSession(createInitialShellUiState(snapshot), "session-hermes-review"),
+        "sessions"
+      )
+    );
 
     expect(
       codexViewModel.sessions.threads.find(
@@ -244,7 +368,16 @@ describe("ui-state", () => {
         (thread) => thread.threadId === "thread-submind-native"
       )?.sourceLabel
     ).toBe("Codex");
-    expect(copilotViewModel.sessions.threads[0]?.sourceLabel).toBe("Copilot");
+    expect(
+      copilotViewModel.sessions.threads.find(
+        (thread) => thread.threadId === "thread-copilot-review"
+      )?.sourceLabel
+    ).toBe("Copilot");
+    expect(
+      hermesViewModel.sessions.threads.find(
+        (thread) => thread.threadId === "thread-hermes-review"
+      )?.sourceLabel
+    ).toBe("Hermes");
   });
 
   it("derives action controls, draft outcome, and action history for the live action loop", async () => {

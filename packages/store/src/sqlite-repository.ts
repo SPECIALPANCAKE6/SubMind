@@ -9,11 +9,16 @@ import type {
   Profile,
   Project,
   ProjectCollectionCounts,
+  SettingsConfigDraft,
   Session,
   Task,
   Thread
 } from "@submind/shared-schemas";
-import { subMindExternalApiVersion } from "@submind/shared-schemas";
+import {
+  defaultSettingsConfigDraft,
+  normalizeSettingsConfig,
+  subMindExternalApiVersion
+} from "@submind/shared-schemas";
 import { redactSensitiveObject, redactSensitiveText } from "@submind/policy";
 import type {
   ActionStateTransitionInput,
@@ -49,6 +54,7 @@ export interface CreateSqliteRepositoryOptions {
 export const subMindSqliteDatabasePath = "sqlite:submind.db";
 const runtimeSourceKey = "runtime_source";
 const runtimeSourceValue = "codex_local_v1";
+const settingsConfigKey = "settings_config";
 
 const createTableStatements = [
   `CREATE TABLE IF NOT EXISTS app_state (
@@ -1324,6 +1330,43 @@ async function setAppStateValue(
   );
 }
 
+async function readSettingsConfig(
+  db: SubMindSqlDatabase
+): Promise<SettingsConfigDraft> {
+  const rawConfig = await getAppStateValue(db, settingsConfigKey);
+
+  if (!rawConfig) {
+    return { ...defaultSettingsConfigDraft };
+  }
+
+  try {
+    const parsed = JSON.parse(rawConfig) as unknown;
+
+    return normalizeSettingsConfig(
+      typeof parsed === "object" && parsed && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null
+    );
+  } catch {
+    return { ...defaultSettingsConfigDraft };
+  }
+}
+
+async function writeSettingsConfig(
+  db: SubMindSqlDatabase,
+  input: SettingsConfigDraft
+): Promise<SettingsConfigDraft> {
+  const settingsConfig = normalizeSettingsConfig(input);
+
+  await setAppStateValue(
+    db,
+    settingsConfigKey,
+    JSON.stringify(settingsConfig)
+  );
+
+  return settingsConfig;
+}
+
 function createRuntimeRetainedSnapshot(
   snapshot: SubMindStoreSnapshot,
   existingSnapshot: SubMindStoreSnapshot
@@ -1940,6 +1983,14 @@ export function createSqliteRepository(
     async getSnapshot() {
       await ensureInitialized();
       return readSnapshot(db);
+    },
+    async getSettingsConfig() {
+      await ensureInitialized();
+      return readSettingsConfig(db);
+    },
+    async updateSettingsConfig(input) {
+      await ensureInitialized();
+      return writeSettingsConfig(db, input);
     },
     async searchProjects(input = {}) {
       await ensureInitialized();
