@@ -2,27 +2,29 @@
   "name": "submind",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@11.10.0+sha512.0b7f8b98060031904c017e3a41eb187a16d40eeb829b95c4f8cb03681761fc4ab53dd219115b9b447f4dce1a05a214764461e7d3703392a9f32f9511ce8c86c8",
   "scripts": {
     "build": "tsc -b --force",
-    "desktop:browser:build": "tsc -b --force && cd apps\\desktop && vite build --config vite.config.ts",
-    "desktop:browser:dev": "tsc -b --force && cd apps\\desktop && vite --config vite.config.ts",
-    "desktop:tauri:dev": "cd apps\\desktop && set \"PATH=%USERPROFILE%\\.cargo\\bin;%PATH%\" && tauri dev --config src-tauri/tauri.conf.json",
-    "desktop:build": "tsc -b --force && cd apps\\desktop && vite build --config vite.config.ts",
-    "desktop:dev": "tsc -b --force && cd apps\\desktop && vite --config vite.config.ts",
+    "context:mcp:build": "tsc -b packages/protocol-mcp --force && node scripts/prepare-mcp-standalone.mjs",
+    "context:mcp:verify": "node packages/protocol-mcp/scripts/verify-mcp.mjs",
+    "desktop:browser:build": "node scripts/desktop-web.mjs build",
+    "desktop:browser:dev": "node scripts/desktop-web.mjs dev",
+    "desktop:tauri:dev": "node scripts/run-tauri.mjs dev --config src-tauri/tauri.conf.json",
+    "desktop:build": "node scripts/desktop-web.mjs build",
+    "desktop:dev": "node scripts/desktop-web.mjs dev",
     "shell:output": "tsc -b --force && node scripts/preview-shell.mjs",
     "typecheck": "tsc -b --pretty",
-    "test": "vitest run packages/shared-schemas/test/shared-schemas.test.ts packages/shared-schemas/test/project-identity.test.ts packages/policy/test/policy.test.ts packages/protocol-codex/test/protocol-codex.test.ts packages/protocol-copilot/test/protocol-copilot.test.ts packages/store/test/store.test.ts packages/workers/test/workers.test.ts packages/ui-state/test/ui-state.test.ts packages/ui-components/test/ui-components.test.ts --pool=threads --poolOptions.threads.singleThread"
+    "test": "vitest run packages/shared-schemas/test/shared-schemas.test.ts packages/shared-schemas/test/project-identity.test.ts packages/policy/test/policy.test.ts packages/protocol-codex/test/protocol-codex.test.ts packages/protocol-copilot/test/protocol-copilot.test.ts packages/protocol-hermes/test/protocol-hermes.test.ts packages/protocol-mcp/test/protocol-mcp.test.ts packages/store/test/store.test.ts packages/workers/test/workers.test.ts packages/ui-state/test/ui-state.test.ts packages/ui-components/test/ui-components.test.ts --pool=threads --poolOptions.threads.singleThread"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.1.13",
-    "@tauri-apps/cli": "^2",
-    "@types/react": "^19.1.16",
-    "@types/react-dom": "^19.1.9",
-    "@vitejs/plugin-react": "^5.0.4",
-    "tailwindcss": "^4.1.13",
-    "typescript": "^5.8.3",
-    "vite": "^7.1.12",
-    "vitest": "^3.1.1"
+    "@tailwindcss/vite": "^4.3.2",
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.2.0",
+    "tailwindcss": "^4.3.2",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7"
   }
 }

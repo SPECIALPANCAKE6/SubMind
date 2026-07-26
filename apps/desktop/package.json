@@ -14,7 +14,7 @@
   "scripts": {
     "browser:build": "vite build --config vite.config.ts",
     "browser:dev": "vite --config vite.config.ts",
-    "tauri:dev": "set \"PATH=%USERPROFILE%\\.cargo\\bin;%PATH%\" && tauri dev --config src-tauri/tauri.conf.json"
+    "tauri:dev": "node ../../scripts/run-tauri.mjs dev --config src-tauri/tauri.conf.json"
   },
   "dependencies": {
     "@fontsource/ibm-plex-sans": "^5.2.6",

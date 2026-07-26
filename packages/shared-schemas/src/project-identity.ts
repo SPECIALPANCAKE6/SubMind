@@ -71,6 +71,18 @@ function convertMountedWindowsPath(value: string): string {
   return `${driveLetter.toUpperCase()}:/${remainder}`;
 }
 
+function convertWslUncPath(value: string): string {
+  const wslUncMatch = value.match(
+    /^\/\/wsl(?:\.localhost|\$)\/[^/]+(?<path>\/.*)?$/i
+  );
+
+  if (!wslUncMatch) {
+    return value;
+  }
+
+  return wslUncMatch.groups?.path ?? "/";
+}
+
 function normalizeDriveLetter(value: string): string {
   return /^[a-z]:\//i.test(value)
     ? `${value[0]!.toUpperCase()}${value.slice(1)}`
@@ -107,7 +119,9 @@ export function normalizeWorkspacePath(value: string): string {
     return "";
   }
 
-  const mountedWindowsPath = convertMountedWindowsPath(normalizedInput);
+  const mountedWindowsPath = convertMountedWindowsPath(
+    convertWslUncPath(normalizedInput)
+  );
   const withoutDrivePrefix =
     /^\/[a-z]:\//i.test(mountedWindowsPath)
       ? mountedWindowsPath.slice(1)

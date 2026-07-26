@@ -1,0 +1,23 @@
+{
+  "name": "@submind/protocol-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "submind-context-mcp": "./dist/mcp-server.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@submind/shared-schemas": "workspace:*",
+    "@submind/store": "workspace:*",
+    "zod": "^3.25.28"
+  }
+}

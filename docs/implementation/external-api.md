@@ -5,12 +5,26 @@ context captured or created by SubMind. Retrieval cannot mutate project data,
 but every successful context-bundle request appends an audit event recording
 exactly what SubMind supplied.
 
-The server is disabled by default. It starts only when the desktop app is run
-with a bearer token:
+The installed desktop app starts the server only when the app process has a
+bearer token. In development, `npm run desktop:tauri:dev` creates or reads the
+token file at `$HOME/.config/submind/api-token`, exports the token to the
+desktop process, and starts the API on port `47821`.
+
+Manual environment setup is only needed when bypassing the repository launcher:
+
+PowerShell:
 
 ```powershell
-$env:SUBMIND_API_TOKEN = "replace-with-at-least-32-random-characters"
+$env:SUBMIND_API_TOKEN = "sm_replace_with_at_least_32_random_characters"
 $env:SUBMIND_API_PORT = "47821"
+pnpm run desktop:tauri:dev
+```
+
+Bash, including WSL and Linux:
+
+```bash
+export SUBMIND_API_TOKEN="sm_replace_with_at_least_32_random_characters"
+export SUBMIND_API_PORT=47821
 pnpm run desktop:tauri:dev
 ```
 
@@ -21,7 +35,7 @@ Security posture:
 - Serves read-only project data and writes append-only context supply audit events.
 - Does not expose mutation endpoints.
 - Redacts detected secrets, credential assignments, auth headers, email
-  addresses, and local Windows user path segments before JSON leaves the API.
+  addresses, and local user path segments before JSON leaves the API.
 - Does not provide any API method to reveal hidden secrets.
 - Adds `Cache-Control: no-store` to responses.
 
@@ -35,6 +49,16 @@ GET /v1/project-export?projectId=project-submind
 GET /v1/projects/project-submind/export
 POST /v1/context-bundle
 ```
+
+Use `/v1/health` with the bearer token for readiness checks:
+
+```bash
+curl -v \
+  -H "Authorization: Bearer $SUBMIND_API_TOKEN" \
+  "http://127.0.0.1:47821/v1/health"
+```
+
+`/` is not an API endpoint.
 
 The export response includes the matched project plus its scoped sessions,
 threads, tasks, events, file changes, memory, guidance, and actions. Global

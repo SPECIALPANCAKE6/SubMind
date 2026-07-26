@@ -32,6 +32,12 @@
       "@submind/shared-schemas": [
         "packages/shared-schemas/src/index.ts"
       ],
+      "@submind/protocol-hermes": [
+        "packages/protocol-hermes/src/index.ts"
+      ],
+      "@submind/protocol-mcp": [
+        "packages/protocol-mcp/src/index.ts"
+      ],
       "@submind/store": [
         "packages/store/src/index.ts"
       ],

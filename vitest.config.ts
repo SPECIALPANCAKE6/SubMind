@@ -17,6 +17,14 @@ export default defineConfig({
         rootDir,
         "packages/protocol-copilot/src/index.ts"
       ),
+      "@submind/protocol-hermes": resolve(
+        rootDir,
+        "packages/protocol-hermes/src/index.ts"
+      ),
+      "@submind/protocol-mcp": resolve(
+        rootDir,
+        "packages/protocol-mcp/src/index.ts"
+      ),
       "@submind/shared-schemas": resolve(
         rootDir,
         "packages/shared-schemas/src/index.ts"
