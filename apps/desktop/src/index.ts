@@ -1,40 +1,70 @@
-import { describeRuntimeContext } from "@submind/core";
-import type { SettingsConfigDraft } from "@submind/shared-schemas";
+import {
+  createAgentObservationSource,
+  createCheckpointPipeline,
+  createObservationRefresh,
+  createWorkTraceEnvelope,
+  describeRuntimeContext,
+  pushProposalToActiveSession,
+  type ActiveSessionProposal
+} from "@submind/core";
+import {
+  createNativeHermesSessionDeliveryAdapter,
+  getHermesNativeDeliveryStatus,
+  saveHermesNativeDeliverySettings,
+  type HermesNativeDeliveryStatus,
+  type HermesNativeSettingsInput
+} from "@submind/protocol-hermes";
+import type {
+  CheckpointKind,
+  SettingsConfigDraft
+} from "@submind/shared-schemas";
 import { redactSensitiveText, starterSubagents } from "@submind/policy";
 import {
-  createStoreSnapshotFromCopilotRuntimeFeed,
+  copilotAdapter,
   type CopilotRuntimeFeed
 } from "@submind/protocol-copilot";
 import {
-  createCodexProtocolEnvelope,
-  createEmptyCodexProtocolEnvelope,
-  createStoreSnapshotFromCodexRuntimeFeed,
+  codexAdapter,
   type CodexRuntimeFeed
 } from "@submind/protocol-codex";
 import {
   type ActionStateTransitionInput,
+  type ContextEligibilityInput,
   type EventHistoryQueryInput,
   type FileChangeHistoryQueryInput,
+  type GuidanceReviewInput,
   type MemoryCurationInput,
   type ProjectExportQueryInput,
   type ProjectSearchInput,
+  type ProjectWorkspaceAliasesInput,
+  type RevertProposalReviewInput,
   createPreviewRepository,
+  createSqliteCheckpointTriggerQueue,
   createSqliteRepository,
   createPreviewStoreSnapshot,
   getPrimarySessionThread,
   getProjectSessions,
-  mergeStoreSnapshots,
   syncRuntimeSnapshotIntoDatabase,
   subMindSqliteDatabasePath,
   type SubMindRepository,
-  type SubMindStoreSnapshot
+  type SubMindStoreSnapshot,
+  type TaskReviewInput
 } from "@submind/store";
 import {
   createInitialShellUiState,
   layoutModes,
   primaryScreens
 } from "@submind/ui-state";
-import { createWorkerPlan } from "@submind/workers";
+import {
+  createNativeModelWorkerAdapter,
+  createWorkerPlan,
+  type CheckpointWorkerScope
+} from "@submind/workers";
+
+let desktopRepositoryInstance: SubMindRepository | undefined;
+let checkpointPipeline:
+  | ReturnType<typeof createCheckpointPipeline>
+  | undefined;
 
 export const desktopShellManifest = {
   name: "SubMind Desktop",
@@ -70,39 +100,125 @@ function getTauriInvoker(): TauriInvoke | null {
   return tauriWindow.__TAURI_INTERNALS__?.invoke ?? null;
 }
 
-async function loadDesktopRuntimeSnapshot(): Promise<SubMindStoreSnapshot | null> {
+function desktopObservationSources() {
   const invoke = getTauriInvoker();
+  return invoke ? [
+    createAgentObservationSource(codexAdapter, () => invoke<CodexRuntimeFeed>("load_codex_runtime_feed", { limit: 24 })),
+    createAgentObservationSource(copilotAdapter, () => invoke<CopilotRuntimeFeed>("load_copilot_runtime_feed", { limit: 24 }))
+  ] : [];
+}
 
+export async function executeDesktopCheckpointModelWorkers(
+  checkpoint: CheckpointKind,
+  scope: CheckpointWorkerScope
+) {
+  await createDesktopRepository().getSnapshot();
+  if (!checkpointPipeline) {
+    throw new Error("Checkpoint model workers require the native desktop runtime.");
+  }
+  const { run, proposals } = await checkpointPipeline.execute(checkpoint, scope);
+  return { ...run, proposals };
+}
+
+export async function triggerDesktopCheckpoint(
+  checkpoint: CheckpointKind,
+  scope: CheckpointWorkerScope
+): Promise<void> {
+  await createDesktopRepository().getSnapshot();
+  if (!checkpointPipeline) {
+    throw new Error("The desktop checkpoint pipeline is not initialized.");
+  }
+  checkpointPipeline.trigger(checkpoint, scope);
+}
+
+export async function runDesktopCheckpointNow(
+  checkpoint: CheckpointKind,
+  scope: CheckpointWorkerScope
+) {
+  await createDesktopRepository().getSnapshot();
+  if (!checkpointPipeline) {
+    throw new Error("The desktop checkpoint pipeline is not initialized.");
+  }
+  const { run } = await checkpointPipeline.runNow(checkpoint, scope);
+  return run;
+}
+
+export async function getDesktopActiveSessionDeliveryStatus(): Promise<{
+  available: boolean;
+  reason?: string;
+  settings: HermesNativeDeliveryStatus | null;
+}> {
+  const invoke = getTauriInvoker();
   if (!invoke) {
-    return null;
+    return {
+      available: false,
+      reason: "Active-session delivery requires the native desktop runtime.",
+      settings: null
+    };
   }
+  const status = await getHermesNativeDeliveryStatus(invoke);
+  return {
+    available: status.configured,
+    ...(!status.configured && status.reason ? { reason: status.reason } : {}),
+    settings: status
+  };
+}
 
-  const [codexFeed, copilotFeed] = await Promise.all([
-    invoke<CodexRuntimeFeed>("load_codex_runtime_feed", {
-      limit: 24
-    }),
-    invoke<CopilotRuntimeFeed>("load_copilot_runtime_feed", {
-      limit: 24
-    })
-  ]);
-  const runtimeSnapshots: SubMindStoreSnapshot[] = [];
-
-  if (codexFeed.threads.length > 0) {
-    runtimeSnapshots.push(createStoreSnapshotFromCodexRuntimeFeed(codexFeed));
+export async function saveDesktopHermesDeliverySettings(
+  settings: HermesNativeSettingsInput
+): Promise<HermesNativeDeliveryStatus> {
+  const invoke = getTauriInvoker();
+  if (!invoke) {
+    throw new Error("Hermes delivery settings require the native desktop runtime.");
   }
+  return saveHermesNativeDeliverySettings(invoke, settings);
+}
 
-  if (copilotFeed.sessions.length > 0) {
-    runtimeSnapshots.push(createStoreSnapshotFromCopilotRuntimeFeed(copilotFeed));
+export async function pushDesktopProposalToActiveSession(input: {
+  kind: ActiveSessionProposal["kind"];
+  id: string;
+  sessionId: string;
+  threadId: string;
+}) {
+  const invoke = getTauriInvoker();
+  if (!invoke) {
+    throw new Error("Active-session delivery requires the native desktop runtime.");
   }
-
-  return runtimeSnapshots.length > 0
-    ? mergeStoreSnapshots(runtimeSnapshots)
-    : null;
+  const repository = createDesktopRepository();
+  const snapshot = await repository.getSnapshot();
+  const proposal: ActiveSessionProposal | null =
+    input.kind === "Task"
+      ? (() => {
+          const item = snapshot.tasks.find((task) => task.id === input.id);
+          return item ? { kind: "Task" as const, item } : null;
+        })()
+      : (() => {
+          const item = snapshot.guidance.find((guidance) => guidance.id === input.id);
+          return item ? { kind: "GuidanceItem" as const, item } : null;
+        })();
+  if (!proposal) {
+    throw new Error("The selected proposal no longer exists.");
+  }
+  return pushProposalToActiveSession(
+    repository,
+    createNativeHermesSessionDeliveryAdapter(invoke),
+    proposal,
+    {
+      projectId: proposal.item.projectId,
+      sessionId: input.sessionId,
+      threadId: input.threadId
+    }
+  );
 }
 
 export function createDesktopRepository(): SubMindRepository {
+  if (desktopRepositoryInstance) {
+    return desktopRepositoryInstance;
+  }
+
   const previewSnapshot = createPreviewStoreSnapshot();
   let repositoryPromise: Promise<SubMindRepository> | null = null;
+  let refreshObservations: (() => Promise<void>) | undefined;
 
   async function resolveRepository(): Promise<SubMindRepository> {
     if (!repositoryPromise) {
@@ -128,18 +244,52 @@ export function createDesktopRepository(): SubMindRepository {
           }
         };
 
-        try {
-          const runtimeSnapshot = await loadDesktopRuntimeSnapshot();
-
-          if (runtimeSnapshot) {
-            await syncRuntimeSnapshotIntoDatabase(db, runtimeSnapshot);
+        checkpointPipeline = createCheckpointPipeline({
+          debounceMs: 5_000,
+          maxDebounceMs: 30_000,
+          queue: createSqliteCheckpointTriggerQueue(db),
+          onQueueError(error) {
+            console.warn(
+              "SubMind checkpoint queue write failed:",
+              redactSensitiveText(String(error)).value
+            );
+          },
+          getRepository: resolveRepository,
+          adapter: createNativeModelWorkerAdapter(
+            getTauriInvoker() as TauriInvoke
+          ),
+          onResult({ run }) {
+            if (run.status !== "completed") {
+              console.warn(
+                `SubMind ${run.checkpoint} checkpoint finished with status ${run.status}.`
+              );
+            }
+          },
+          onError(error, checkpoint) {
+            console.warn(
+              `SubMind ${checkpoint} checkpoint failed:`,
+              redactSensitiveText(String(error)).value
+            );
           }
+        });
+        refreshObservations = createObservationRefresh(
+          desktopObservationSources(),
+          (snapshot) => syncRuntimeSnapshotIntoDatabase(db, snapshot),
+          5_000,
+          (snapshot) => checkpointPipeline?.observe(snapshot)
+        );
+        try {
+          await refreshObservations();
         } catch (error) {
-          console.warn(
-            "SubMind fell back to preview snapshot seed.",
-            redactSensitiveText(error instanceof Error ? error.message : String(error)).value
-          );
+          console.warn("SubMind observation refresh incomplete:", redactSensitiveText(String(error)).value);
         }
+
+        void checkpointPipeline.restore().catch((error: unknown) => {
+          console.warn(
+            "SubMind checkpoint queue restore failed:",
+            redactSensitiveText(String(error)).value
+          );
+        });
 
         return createSqliteRepository({
           db,
@@ -151,15 +301,27 @@ export function createDesktopRepository(): SubMindRepository {
     return repositoryPromise;
   }
 
-  return {
+  const repository: SubMindRepository = {
     async getSnapshot() {
-      return (await resolveRepository()).getSnapshot();
+      const repository = await resolveRepository();
+      try { await refreshObservations?.(); }
+      catch (error) { console.warn("SubMind observation refresh incomplete:", redactSensitiveText(String(error)).value); }
+      return repository.getSnapshot();
+    },
+    async appendEvents(events) {
+      return (await resolveRepository()).appendEvents(events);
+    },
+    async appendGeneratedProposals(batch) {
+      return (await resolveRepository()).appendGeneratedProposals(batch);
     },
     async getSettingsConfig() {
       return (await resolveRepository()).getSettingsConfig();
     },
     async updateSettingsConfig(input: SettingsConfigDraft) {
       return (await resolveRepository()).updateSettingsConfig(input);
+    },
+    async updateProjectWorkspaceAliases(input: ProjectWorkspaceAliasesInput) {
+      return (await resolveRepository()).updateProjectWorkspaceAliases(input);
     },
     async searchProjects(input?: ProjectSearchInput) {
       return (await resolveRepository()).searchProjects(input);
@@ -181,8 +343,22 @@ export function createDesktopRepository(): SubMindRepository {
     },
     async updateMemoryItem(input: MemoryCurationInput) {
       return (await resolveRepository()).updateMemoryItem(input);
+    },
+    async reviewGuidanceItem(input: GuidanceReviewInput) {
+      return (await resolveRepository()).reviewGuidanceItem(input);
+    },
+    async reviewTask(input: TaskReviewInput) {
+      return (await resolveRepository()).reviewTask(input);
+    },
+    async setContextEligibility(input: ContextEligibilityInput) {
+      return (await resolveRepository()).setContextEligibility(input);
+    },
+    async revertProposalReview(input: RevertProposalReviewInput) {
+      return (await resolveRepository()).revertProposalReview(input);
     }
   };
+  desktopRepositoryInstance = repository;
+  return repository;
 }
 
 export function createDesktopBootstrap(
@@ -212,17 +388,7 @@ export function createDesktopBootstrap(
       ...(activeThread ? { activeThread } : {})
     }),
     store: snapshot,
-    protocol:
-      activeSession && activeThread
-        ? createCodexProtocolEnvelope(snapshot, activeSession.id, activeThread.id)
-        : createEmptyCodexProtocolEnvelope(
-            activeSession?.id ?? "pending-session",
-            activeThread?.id ?? "pending-thread",
-            activeThread?.updatedAt ??
-              activeSession?.updatedAt ??
-              activeProject?.updatedAt ??
-              new Date().toISOString()
-          ),
+    protocol: createWorkTraceEnvelope(snapshot, activeSession?.id, activeThread?.id),
     checkpoints: {
       event: createWorkerPlan("event"),
       thread: createWorkerPlan("thread"),
