@@ -3,6 +3,7 @@ import {
   useEffect,
   useContext,
   useRef,
+  useState,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode
@@ -28,6 +29,7 @@ import type {
   TraceEventItemModel
 } from "@submind/ui-state";
 import type {
+  Project,
   SettingsConfigKey,
   SettingsConfigValue
 } from "@submind/shared-schemas";
@@ -48,6 +50,10 @@ export interface SubMindShellActions {
   onClearProjectSelection: () => void;
   onClearProjectFocus: () => void;
   onProjectSearchChange: (query: string) => void;
+  onProjectWorkspaceAliasesChange: (
+    projectId: string,
+    workspaceAliases: string[]
+  ) => void;
   onRevealSecretTarget: (target: SecretRevealTarget) => void;
   onHideSecretTarget: () => void;
   onSelectSession: (sessionId: string) => void;
@@ -67,6 +73,24 @@ export interface SubMindShellActions {
   ) => void;
   onMemoryPinnedDraftChange: (isPinned: boolean) => void;
   onSaveMemory: (curationState: "confirmed" | "edited") => void;
+  onGenerateMemoryAndTasks: () => void;
+  onReviewMemory: (decision: "accept" | "dismiss") => void;
+  onGenerateGuidance: () => void;
+  onReviewGuidance: (nextState: "suggested" | "suppressed") => void;
+  onReviewTask: (taskId: string, decision: "accept" | "reject") => void;
+  onSetContextEligibility: (
+    entityKind: "MemoryItem" | "GuidanceItem" | "Task",
+    entityId: string,
+    isEligible: boolean
+  ) => void;
+  onRevertProposalReview: (eventId: string) => void;
+  onPushToActiveSession: (kind: "Task" | "GuidanceItem", id: string) => void;
+  onSaveHermesDeliverySettings: (input: {
+    baseUrl: string | null;
+    allowRemote: boolean;
+    apiKey?: string;
+    clearApiKey?: boolean;
+  }) => void;
 }
 
 export interface SubMindShellProps {
@@ -473,9 +497,13 @@ function ActionHistoryItem({ item }: { item: ActionHistoryItemModel }) {
 }
 
 function RetainedHistoryItem({
-  item
+  item,
+  onRevert,
+  isRevertPending
 }: {
   item: SubMindShellViewModel["memory"]["inspector"]["historyItems"][number];
+  onRevert?: (eventId: string) => void;
+  isRevertPending?: boolean;
 }) {
   return (
     <article
@@ -492,6 +520,16 @@ function RetainedHistoryItem({
       <p className="sm-action-history__actor">
         Origin: {protectedText(item.originLabel)}
       </p>
+      {item.canRevert && onRevert ? (
+        <button
+          type="button"
+          onClick={() => onRevert(item.eventId)}
+          disabled={isRevertPending}
+          className="sm-action-transition-button sm-action-transition-button--violet"
+        >
+          Revert this change
+        </button>
+      ) : null}
     </article>
   );
 }
@@ -690,6 +728,52 @@ function ProjectCard({
   );
 }
 
+function ProjectWorkspaceAliasEditor({
+  project,
+  onSave
+}: {
+  project: Project;
+  onSave: (projectId: string, aliases: string[]) => void;
+}) {
+  const [draft, setDraft] = useState((project.workspaceAliases ?? []).join("\n"));
+
+  return (
+    <div className="sm-project-alias-editor">
+      <div className="sm-project-alias-editor__header">
+        <div>
+          <p className="sm-label">Workspace Aliases</p>
+          <p className="sm-project-alias-editor__body">
+            Link remote, container, or alternate workspace locators explicitly.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="sm-project-card__affordance"
+          onClick={() =>
+            onSave(
+              project.id,
+              draft
+                .split(/[\n,]/)
+                .map((alias) => alias.trim())
+                .filter(Boolean)
+            )
+          }
+        >
+          Save aliases
+        </button>
+      </div>
+      <textarea
+        value={draft}
+        onChange={(event) => setDraft(event.currentTarget.value)}
+        placeholder="One workspace locator per line"
+        aria-label={`Workspace aliases for ${project.name}`}
+        className="sm-project-alias-editor__input"
+        rows={3}
+      />
+    </div>
+  );
+}
+
 function SessionCard({
   item,
   onSelect
@@ -784,7 +868,15 @@ function SessionThreadCard({
   );
 }
 
-function SessionTaskCard({ item }: { item: SessionTaskItemModel }) {
+function SessionTaskCard({
+  item,
+  actions,
+  isMutationPending
+}: {
+  item: SessionTaskItemModel;
+  actions: SubMindShellActions;
+  isMutationPending: boolean;
+}) {
   return (
     <article className="sm-session-task">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -796,13 +888,82 @@ function SessionTaskCard({ item }: { item: SessionTaskItemModel }) {
         </div>
         <div className="flex flex-wrap gap-2 text-xs text-[var(--sm-text-muted)]">
           <span className="sm-status-pill">{titleCase(item.status)}</span>
+          {item.status === "proposed" && item.suggestedStatus ? (
+            <span className="sm-chip sm-chip--subtle">
+              Suggests {titleCase(item.suggestedStatus)}
+            </span>
+          ) : null}
           <span className="sm-chip sm-chip--subtle">{titleCase(item.priority)}</span>
         </div>
       </div>
       <p className="sm-copy text-sm leading-7">{protectedText(item.summary)}</p>
       <p className="text-xs text-[var(--sm-text-muted)]">
-        {protectedText(item.updatedAtLabel)}
+        {protectedText(item.updatedAtLabel)} / {item.sourceEventCount} evidence events
       </p>
+      {item.canSetContextEligibility ? (
+        <button
+          type="button"
+          onClick={() =>
+            actions.onSetContextEligibility("Task", item.taskId, !item.contextEligible)
+          }
+          disabled={isMutationPending}
+          className="sm-action-transition-button sm-action-transition-button--plum"
+        >
+          {item.contextEligible
+            ? "Remove from future context bundles"
+            : "Eligible for future context bundles"}
+        </button>
+      ) : null}
+      {item.status !== "proposed" && item.status !== "rejected" ? (
+        <div className="grid gap-1">
+          <button
+            type="button"
+            onClick={() => actions.onPushToActiveSession("Task", item.taskId)}
+            disabled={!item.canPushToActiveSession || isMutationPending}
+            title={item.pushUnavailableReason}
+            className="sm-action-transition-button sm-action-transition-button--violet"
+          >
+            Push to active session
+          </button>
+          {!item.canPushToActiveSession ? (
+            <span className="text-xs text-[var(--sm-text-muted)]">
+              {protectedText(item.pushUnavailableReason)} Future-bundle eligibility does not push this task.
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      {item.isReviewable ? (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => actions.onReviewTask(item.taskId, "accept")}
+            disabled={isMutationPending}
+            className="sm-action-transition-button sm-action-transition-button--plum"
+          >
+            Accept task
+          </button>
+          <button
+            type="button"
+            onClick={() => actions.onReviewTask(item.taskId, "reject")}
+            disabled={isMutationPending}
+            className="sm-action-transition-button sm-action-transition-button--violet"
+          >
+            Reject task
+          </button>
+        </div>
+      ) : null}
+      {item.historyItems.length > 0 ? (
+        <div className="sm-action-history__list">
+          {item.historyItems.map((historyItem) => (
+            <RetainedHistoryItem
+              key={historyItem.eventId}
+              item={historyItem}
+              onRevert={actions.onRevertProposalReview}
+              isRevertPending={isMutationPending}
+            />
+          ))}
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -1226,14 +1387,44 @@ function renderSessions(
         <Surface variant="panel" className="sm-work-trace-panel">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="sm-label">Tasks</p>
-            <span className="sm-chip sm-chip--subtle">
-              {viewModel.sessions.tasks.length} in focus
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="sm-chip sm-chip--subtle">
+                {viewModel.sessions.tasks.length} in focus
+              </span>
+              <button
+                type="button"
+                onClick={actions.onGenerateMemoryAndTasks}
+                disabled={!viewModel.sessions.canGenerate || viewModel.sessions.isGenerationPending}
+                className="sm-action-transition-button sm-action-transition-button--violet"
+              >
+                {viewModel.sessions.isGenerationPending
+                  ? "Generating work proposals..."
+                  : "Generate Work Proposals"}
+              </button>
+            </div>
           </div>
+          {viewModel.sessions.generationError ? (
+            <p role="alert" className="sm-copy text-sm text-[var(--sm-text-attention)]">
+              {protectedText(viewModel.sessions.generationError)}
+            </p>
+          ) : null}
+          {viewModel.sessions.taskReviewError ? (
+            <p role="alert" className="sm-copy text-sm text-[var(--sm-text-attention)]">
+              {protectedText(viewModel.sessions.taskReviewError)}
+            </p>
+          ) : null}
           {viewModel.sessions.tasks.length > 0 ? (
             <div className="grid gap-3 xl:grid-cols-2">
               {viewModel.sessions.tasks.map((item) => (
-                <SessionTaskCard key={item.taskId} item={item} />
+                <SessionTaskCard
+                  key={item.taskId}
+                  item={item}
+                  actions={actions}
+                  isMutationPending={
+                    viewModel.sessions.isTaskReviewPending ||
+                    viewModel.memory.isContextEligibilityPending
+                  }
+                />
               ))}
             </div>
           ) : (
@@ -1241,6 +1432,26 @@ function renderSessions(
               No task structure is recorded for the current thread.
             </p>
           )}
+          {viewModel.sessions.pushError ? (
+            <p role="alert" className="sm-copy text-sm text-[var(--sm-text-attention)]">
+              {protectedText(viewModel.sessions.pushError)}
+            </p>
+          ) : null}
+          {viewModel.sessions.pushNotice ? (
+            <p role="status" className="sm-copy text-sm text-[var(--sm-text-muted)]">
+              {protectedText(viewModel.sessions.pushNotice)}
+            </p>
+          ) : null}
+          {viewModel.sessions.contextEligibilityError ? (
+            <p role="alert" className="sm-copy text-sm text-[var(--sm-text-attention)]">
+              {protectedText(viewModel.sessions.contextEligibilityError)}
+            </p>
+          ) : null}
+          {viewModel.sessions.proposalReviewRevertError ? (
+            <p role="alert" className="sm-copy text-sm text-[var(--sm-text-attention)]">
+              {protectedText(viewModel.sessions.proposalReviewRevertError)}
+            </p>
+          ) : null}
         </Surface>
       </div>
 
@@ -1273,6 +1484,8 @@ function renderMemory(
 ) {
   const inspector = viewModel.memory.inspector;
   const hasSelectedMemory = !!inspector.memoryId;
+  const memoryMutationPending =
+    viewModel.memory.isMutationPending || viewModel.memory.isReviewPending;
 
   return (
     <div className="sm-memory-shell">
@@ -1325,6 +1538,39 @@ function renderMemory(
               {protectedText(inspector.changeSummary)}
             </p>
           </div>
+          <div className="sm-action-panel__transitions">
+            <button
+              type="button"
+              onClick={() =>
+                inspector.memoryId &&
+                actions.onSetContextEligibility(
+                  "MemoryItem",
+                  inspector.memoryId,
+                  !inspector.contextEligible
+                )
+              }
+              disabled={
+                !inspector.memoryId ||
+                !inspector.canSetContextEligibility ||
+                viewModel.memory.isContextEligibilityPending
+              }
+              className="sm-action-transition-button sm-action-transition-button--plum"
+            >
+              {inspector.contextEligible
+                ? "Remove from future context bundles"
+                : "Eligible for future context bundles"}
+            </button>
+            <span className="sm-chip sm-chip--subtle">
+              {inspector.contextEligible
+                ? "Eligible for future context bundles"
+                : "Not eligible for future context bundles"}
+            </span>
+          </div>
+          {viewModel.memory.contextEligibilityError ? (
+            <p role="alert" className="sm-copy text-sm text-[var(--sm-text-attention)]">
+              {protectedText(viewModel.memory.contextEligibilityError)}
+            </p>
+          ) : null}
         </Surface>
 
         <Surface variant="muted" className="sm-memory-curation">
@@ -1336,10 +1582,32 @@ function renderMemory(
                 the active project room keeps the right context at hand.
               </p>
             </div>
-            {viewModel.memory.isMutationPending ? (
-              <span className="sm-chip sm-chip--attention">Saving...</span>
-            ) : null}
+            <div className="flex flex-wrap items-center gap-2">
+              {viewModel.memory.isMutationPending || viewModel.memory.isReviewPending ? (
+                <span className="sm-chip sm-chip--attention">Saving...</span>
+              ) : null}
+              <button
+                type="button"
+                onClick={actions.onGenerateMemoryAndTasks}
+                disabled={!viewModel.memory.canGenerate || viewModel.memory.isGenerationPending}
+                className="sm-action-transition-button sm-action-transition-button--violet"
+              >
+                {viewModel.memory.isGenerationPending
+                  ? "Generating..."
+                  : "Generate Memory + Task Proposals"}
+              </button>
+            </div>
           </div>
+          {viewModel.memory.generationError ? (
+            <p role="alert" className="sm-copy text-sm text-[var(--sm-text-attention)]">
+              {protectedText(viewModel.memory.generationError)}
+            </p>
+          ) : null}
+          {viewModel.memory.reviewError ? (
+            <p role="alert" className="sm-copy text-sm text-[var(--sm-text-attention)]">
+              {protectedText(viewModel.memory.reviewError)}
+            </p>
+          ) : null}
 
           <div className="sm-memory-curation__form">
             <label className="grid gap-2">
@@ -1349,7 +1617,7 @@ function renderMemory(
                 onChange={(event) =>
                   actions.onMemorySummaryDraftChange(event.target.value)
                 }
-                disabled={!inspector.memoryId || viewModel.memory.isMutationPending}
+                disabled={!inspector.memoryId || memoryMutationPending}
                 className="sm-retained-input"
               />
               {hasProtectedText(viewModel.memory.draftSummary) ? (
@@ -1366,7 +1634,7 @@ function renderMemory(
                 onChange={(event) =>
                   actions.onMemoryContentDraftChange(event.target.value)
                 }
-                disabled={!inspector.memoryId || viewModel.memory.isMutationPending}
+                disabled={!inspector.memoryId || memoryMutationPending}
                 className="sm-retained-textarea"
               />
               {hasProtectedText(viewModel.memory.draftContent) ? (
@@ -1387,7 +1655,7 @@ function renderMemory(
                     event.target.value as SubMindShellViewModel["memory"]["draftStatus"]
                   )
                 }
-                disabled={!inspector.memoryId || viewModel.memory.isMutationPending}
+                disabled={!inspector.memoryId || memoryMutationPending}
                 className="sm-retained-input"
               >
                 <option value="">Select status</option>
@@ -1406,17 +1674,37 @@ function renderMemory(
                 onChange={(event) =>
                   actions.onMemoryPinnedDraftChange(event.target.checked)
                 }
-                disabled={!inspector.memoryId || viewModel.memory.isMutationPending}
+                disabled={!inspector.memoryId || memoryMutationPending}
               />
               <span>Pin memory</span>
             </label>
           </div>
 
           <div className="sm-action-panel__transitions">
+            {inspector.statusLabel === "Draft" ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => actions.onReviewMemory("accept")}
+                  disabled={!inspector.memoryId || memoryMutationPending}
+                  className="sm-action-transition-button sm-action-transition-button--plum"
+                >
+                  Accept Draft
+                </button>
+                <button
+                  type="button"
+                  onClick={() => actions.onReviewMemory("dismiss")}
+                  disabled={!inspector.memoryId || memoryMutationPending}
+                  className="sm-action-transition-button sm-action-transition-button--violet"
+                >
+                  Dismiss Draft
+                </button>
+              </>
+            ) : null}
             <button
               type="button"
               onClick={() => actions.onSaveMemory("edited")}
-              disabled={!inspector.memoryId || viewModel.memory.isMutationPending}
+              disabled={!inspector.memoryId || memoryMutationPending}
               className="sm-action-transition-button sm-action-transition-button--violet"
             >
               <span className="sm-action-transition-button__label">Save Edit</span>
@@ -1427,7 +1715,7 @@ function renderMemory(
             <button
               type="button"
               onClick={() => actions.onSaveMemory("confirmed")}
-              disabled={!inspector.memoryId || viewModel.memory.isMutationPending}
+              disabled={!inspector.memoryId || memoryMutationPending}
               className="sm-action-transition-button sm-action-transition-button--plum"
             >
               <span className="sm-action-transition-button__label">Confirm Memory</span>
@@ -1546,7 +1834,12 @@ function renderMemory(
               {inspector.historyItems.length > 0 ? (
                 <div className="sm-action-history__list">
                   {inspector.historyItems.map((item) => (
-                    <RetainedHistoryItem key={item.eventId} item={item} />
+                    <RetainedHistoryItem
+                      key={item.eventId}
+                      item={item}
+                      onRevert={actions.onRevertProposalReview}
+                      isRevertPending={viewModel.memory.isProposalReviewRevertPending}
+                    />
                   ))}
                 </div>
               ) : (
@@ -1611,10 +1904,32 @@ function renderGuidance(
       <Surface variant="muted" className="sm-guidance-feed">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="sm-label">Guidance Feed</p>
-          <span className="sm-chip sm-chip--subtle">
-            {viewModel.guidance.cards.length} packages
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="sm-chip sm-chip--subtle">
+              {viewModel.guidance.cards.length} packages
+            </span>
+            <button
+              type="button"
+              onClick={actions.onGenerateGuidance}
+              disabled={!viewModel.guidance.canGenerate || viewModel.guidance.isGenerationPending}
+              className="sm-action-transition-button sm-action-transition-button--violet"
+            >
+              {viewModel.guidance.isGenerationPending
+                ? "Generating..."
+                : "Generate Guidance"}
+            </button>
+          </div>
         </div>
+        {viewModel.guidance.generationError ? (
+          <p role="alert" className="sm-copy text-sm text-[var(--sm-text-attention)]">
+            {protectedText(viewModel.guidance.generationError)}
+          </p>
+        ) : null}
+        {viewModel.guidance.reviewError ? (
+          <p role="alert" className="sm-copy text-sm text-[var(--sm-text-attention)]">
+            {protectedText(viewModel.guidance.reviewError)}
+          </p>
+        ) : null}
         {viewModel.guidance.cards.map((card) => (
           <GuidanceCard
             key={card.guidanceId}
@@ -1724,6 +2039,14 @@ function renderGuidance(
                   <dd>{protectedText(viewModel.guidance.suppliedContext.threadLabel)}</dd>
                 </div>
                 <div>
+                  <dt>Delivery evidence</dt>
+                  <dd>{protectedText(viewModel.guidance.suppliedContext.deliveryLabel)}</dd>
+                </div>
+                <div>
+                  <dt>Outcome evidence</dt>
+                  <dd>{protectedText(viewModel.guidance.suppliedContext.outcomeLabel)}</dd>
+                </div>
+                <div>
                   <dt>Ranking</dt>
                   <dd>{protectedText(viewModel.guidance.suppliedContext.rankingLabel)}</dd>
                 </div>
@@ -1815,6 +2138,105 @@ function renderGuidance(
               value={viewModel.guidance.inspector.policySummary}
             />
           </div>
+          {viewModel.guidance.inspector.stateLabel === "Candidate" ? (
+            <div className="sm-action-panel__transitions">
+              <button
+                type="button"
+                onClick={() => actions.onReviewGuidance("suggested")}
+                disabled={!viewModel.guidance.inspector.guidanceId || viewModel.guidance.isReviewPending}
+                className="sm-action-transition-button sm-action-transition-button--plum"
+              >
+                Approve as Suggestion
+              </button>
+              <button
+                type="button"
+                onClick={() => actions.onReviewGuidance("suppressed")}
+                disabled={!viewModel.guidance.inspector.guidanceId || viewModel.guidance.isReviewPending}
+                className="sm-action-transition-button sm-action-transition-button--violet"
+              >
+                Suppress Candidate
+              </button>
+            </div>
+          ) : null}
+          {viewModel.guidance.inspector.guidanceId ? (
+            <div className="grid gap-2">
+              <div className="sm-action-panel__transitions">
+                <button
+                  type="button"
+                  onClick={() =>
+                    viewModel.guidance.inspector.guidanceId &&
+                    actions.onSetContextEligibility(
+                      "GuidanceItem",
+                      viewModel.guidance.inspector.guidanceId,
+                      !viewModel.guidance.inspector.contextEligible
+                    )
+                  }
+                  disabled={
+                    !viewModel.guidance.inspector.canSetContextEligibility ||
+                    viewModel.guidance.isContextEligibilityPending
+                  }
+                  className="sm-action-transition-button sm-action-transition-button--plum"
+                >
+                  {viewModel.guidance.inspector.contextEligible
+                    ? "Remove from future context bundles"
+                    : "Eligible for future context bundles"}
+                </button>
+                <span className="sm-chip sm-chip--subtle">
+                  {viewModel.guidance.inspector.contextEligible
+                    ? "Eligible for future context bundles"
+                    : "Not eligible for future context bundles"}
+                </span>
+              </div>
+              {!["Candidate", "Suppressed", "Resolved"].includes(
+                viewModel.guidance.inspector.stateLabel
+              ) ? (
+                <div className="grid gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const guidanceId = viewModel.guidance.inspector.guidanceId;
+                      if (guidanceId) {
+                        actions.onPushToActiveSession("GuidanceItem", guidanceId);
+                      }
+                    }}
+                    disabled={
+                      !viewModel.guidance.inspector.canPushToActiveSession ||
+                      viewModel.guidance.isPushPending
+                    }
+                    title={viewModel.guidance.inspector.pushUnavailableReason}
+                    className="sm-action-transition-button sm-action-transition-button--violet"
+                  >
+                    Push to active session
+                  </button>
+                  {!viewModel.guidance.inspector.canPushToActiveSession ? (
+                    <span className="text-xs text-[var(--sm-text-muted)]">
+                      {protectedText(viewModel.guidance.inspector.pushUnavailableReason)} This is separate from future-bundle eligibility.
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {viewModel.guidance.pushError ? (
+            <p role="alert" className="sm-copy text-sm text-[var(--sm-text-attention)]">
+              {protectedText(viewModel.guidance.pushError)}
+            </p>
+          ) : null}
+          {viewModel.guidance.pushNotice ? (
+            <p role="status" className="sm-copy text-sm text-[var(--sm-text-muted)]">
+              {protectedText(viewModel.guidance.pushNotice)}
+            </p>
+          ) : null}
+          {viewModel.guidance.contextEligibilityError ? (
+            <p role="alert" className="sm-copy text-sm text-[var(--sm-text-attention)]">
+              {protectedText(viewModel.guidance.contextEligibilityError)}
+            </p>
+          ) : null}
+          {viewModel.guidance.proposalReviewRevertError ? (
+            <p role="alert" className="sm-copy text-sm text-[var(--sm-text-attention)]">
+              {protectedText(viewModel.guidance.proposalReviewRevertError)}
+            </p>
+          ) : null}
         </Surface>
 
         <Surface variant="muted" className="sm-guidance-inspector">
@@ -1863,7 +2285,12 @@ function renderGuidance(
           {viewModel.guidance.inspector.historyItems.length > 0 ? (
             <div className="sm-action-history__list">
               {viewModel.guidance.inspector.historyItems.map((item) => (
-                <RetainedHistoryItem key={item.eventId} item={item} />
+                <RetainedHistoryItem
+                  key={item.eventId}
+                  item={item}
+                  onRevert={actions.onRevertProposalReview}
+                  isRevertPending={viewModel.guidance.isProposalReviewRevertPending}
+                />
               ))}
             </div>
           ) : (
@@ -2070,6 +2497,123 @@ function SettingsRow({
   );
 }
 
+function HermesDeliveryPanel({
+  status,
+  actions
+}: {
+  status: NonNullable<SubMindShellViewModel["hermesDelivery"]>;
+  actions: SubMindShellActions;
+}) {
+  const [baseUrl, setBaseUrl] = useState(status.baseUrl);
+  const [allowRemote, setAllowRemote] = useState(status.allowRemote);
+  const [apiKey, setApiKey] = useState("");
+
+  useEffect(() => {
+    setBaseUrl(status.baseUrl);
+    setAllowRemote(status.allowRemote);
+  }, [status.baseUrl, status.allowRemote]);
+
+  const submit = (clearApiKey: boolean) => {
+    actions.onSaveHermesDeliverySettings({
+      baseUrl: baseUrl.trim() === "" ? null : baseUrl.trim(),
+      allowRemote,
+      ...(apiKey.trim() !== "" && !clearApiKey ? { apiKey } : {}),
+      ...(clearApiKey ? { clearApiKey: true } : {})
+    });
+    setApiKey("");
+  };
+
+  const keyLabel = status.keyConfigured
+    ? `Key set (${status.keySource === "environment" ? "environment" : "saved"})`
+    : "No key";
+
+  return (
+    <Surface variant="panel" className="sm-settings-section sm-settings-hermes">
+      <div className="sm-settings-section__header">
+        <div>
+          <p className="sm-label">Active-session delivery</p>
+          <h3 className="sm-display">Hermes API server</h3>
+        </div>
+        <span className="sm-chip sm-chip--subtle">
+          {status.configured ? "Configured" : "Not configured"}
+        </span>
+      </div>
+      <p className="sm-settings-section__body">
+        Used only when you push a proposal into an active Hermes session. The key
+        is stored by the native runtime, never shown here, and environment
+        variables override saved values.
+      </p>
+      <div className="sm-settings-control-list">
+        <label className="sm-settings-field">
+          <span>Base URL</span>
+          <input
+            type="text"
+            value={baseUrl}
+            disabled={status.baseUrlFromEnvironment || status.isSavePending}
+            onChange={(event) => setBaseUrl(event.currentTarget.value)}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </label>
+        <label className="sm-settings-field">
+          <span>Allow remote (HTTPS only)</span>
+          <input
+            type="checkbox"
+            checked={allowRemote}
+            disabled={status.allowRemoteFromEnvironment || status.isSavePending}
+            onChange={(event) => setAllowRemote(event.currentTarget.checked)}
+          />
+        </label>
+        <label className="sm-settings-field">
+          <span>{protectedText(`API key — ${keyLabel}`)}</span>
+          <input
+            type="password"
+            value={apiKey}
+            disabled={status.isSavePending}
+            placeholder={status.keyConfigured ? "Leave blank to keep" : "Paste key"}
+            onChange={(event) => setApiKey(event.currentTarget.value)}
+            autoComplete="new-password"
+            spellCheck={false}
+          />
+        </label>
+      </div>
+      {status.reason ? (
+        <p className="sm-settings-section__body">{protectedText(status.reason)}</p>
+      ) : null}
+      {status.saveError ? (
+        <p role="alert" className="sm-settings-section__body">
+          {protectedText(status.saveError)}
+        </p>
+      ) : null}
+      {status.saveNotice ? (
+        <p role="status" className="sm-settings-section__body">
+          {protectedText(status.saveNotice)}
+        </p>
+      ) : null}
+      <div className="sm-settings-footer">
+        <button
+          type="button"
+          disabled={status.isSavePending}
+          onClick={() => submit(false)}
+          className="sm-settings-reset"
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          disabled={
+            status.isSavePending || status.keySource !== "settings"
+          }
+          onClick={() => submit(true)}
+          className="sm-settings-reset"
+        >
+          Clear saved key
+        </button>
+      </div>
+    </Surface>
+  );
+}
+
 function RuntimeSourceCard({
   source
 }: {
@@ -2122,14 +2666,20 @@ function SettingsControl({
             <p className="sm-label">{protectedText(control.statusLabel)}</p>
             <h4>{protectedText(control.label)}</h4>
           </div>
-          <span className="sm-settings-control__value">
-            {protectedText(control.valueLabel)}
-          </span>
+          <div className="sm-settings-control__badges">
+            <span className="sm-chip sm-chip--subtle">
+              {protectedText(control.scopeLabel)}
+            </span>
+            <span className="sm-settings-control__value">
+              {protectedText(control.valueLabel)}
+            </span>
+          </div>
         </div>
         <p className="sm-settings-control__description">
           {protectedText(control.description)}
         </p>
         <div className="sm-settings-control__metrics">
+          <span>{protectedText(`Effective source: ${control.sourceLabel}`)}</span>
           {control.metrics.map((metric) => (
             <span key={`${control.id}:${metric.label}`}>
               {protectedText(`${metric.label}: ${metric.value}`)}
@@ -2248,8 +2798,9 @@ function renderSettings(
             </button>
           </div>
           <p className="sm-settings-section__body">
-            These controls update the current shell session immediately. Durable
-            profile or project settings can use the same shape once persistence lands.
+            These controls update the scoped settings payload immediately. Focused
+            projects receive project overrides where supported; otherwise controls
+            write app or profile settings.
           </p>
           <div className="sm-settings-control-list">
             {viewModel.settings.controls.map((control) => (
@@ -2261,6 +2812,13 @@ function renderSettings(
             ))}
           </div>
         </Surface>
+
+        {viewModel.hermesDelivery ? (
+          <HermesDeliveryPanel
+            status={viewModel.hermesDelivery}
+            actions={actions}
+          />
+        ) : null}
 
         {viewModel.settings.sections.map((section) => (
           <Surface
@@ -2457,6 +3015,13 @@ export function SubMindShell({
                 {viewModel.projectStack.focusedContextCards.map((card) => (
                   <ToneCard key={card.id} card={card} size="support" emphasized />
                 ))}
+                {viewModel.activeProject ? (
+                  <ProjectWorkspaceAliasEditor
+                    key={viewModel.activeProject.id}
+                    project={viewModel.activeProject}
+                    onSave={actions.onProjectWorkspaceAliasesChange}
+                  />
+                ) : null}
               </Surface>
             ) : null}
           </aside>

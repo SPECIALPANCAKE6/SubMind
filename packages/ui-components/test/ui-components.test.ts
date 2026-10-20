@@ -11,6 +11,8 @@ import {
   selectShellAction,
   selectShellGuidance,
   selectShellMemory,
+  selectShellSession,
+  selectShellThread,
   setShellPrimaryScreen,
   toggleShellProjectFocus
 } from "../../ui-state/src/index";
@@ -37,6 +39,7 @@ describe("ui-components", () => {
     onClearProjectSelection: () => undefined,
     onClearProjectFocus: () => undefined,
     onProjectSearchChange: () => undefined,
+    onProjectWorkspaceAliasesChange: () => undefined,
     onRevealSecretTarget: () => undefined,
     onHideSecretTarget: () => undefined,
     onSelectSession: () => undefined,
@@ -50,7 +53,12 @@ describe("ui-components", () => {
     onMemoryContentDraftChange: () => undefined,
     onMemoryStatusDraftChange: () => undefined,
     onMemoryPinnedDraftChange: () => undefined,
-    onSaveMemory: () => undefined
+    onSaveMemory: () => undefined,
+    onGenerateMemoryAndTasks: () => undefined,
+    onReviewMemory: () => undefined,
+    onGenerateGuidance: () => undefined,
+    onReviewGuidance: () => undefined,
+    onReviewTask: () => undefined
   };
 
   it("renders the command strip, project stack, and dashboard shell", () => {
@@ -130,6 +138,9 @@ describe("ui-components", () => {
     expect(markup).toContain('data-project-state="focused"');
     expect(markup).toContain('data-stack-mode="focused"');
     expect(markup).toContain("Exit Focus");
+    expect(markup).toContain("Workspace Aliases");
+    expect(markup).toContain("Save aliases");
+    expect(markup).toContain("Workspace aliases for SubMind");
     expect(markup).toContain("guidance link");
     expect(markup).toContain("actual outcome");
     expect(markup).toContain("Expected Outcome");
@@ -137,6 +148,97 @@ describe("ui-components", () => {
     expect(markup).toContain("Approve");
     expect(markup).toContain("Reject");
     expect(markup).toContain("Block");
+  });
+
+  it("renders generation and review controls for memory, guidance, and semantic tasks", () => {
+    const snapshot = createPreviewStoreSnapshot();
+    const thread = snapshot.threads.find(
+      (item) => item.id === "thread-submind-migration"
+    )!;
+    const event = snapshot.events.find((item) => item.threadId === thread.id)!;
+    const memory = snapshot.memory.find(
+      (item) => item.id === "memory-submind-architecture"
+    )!;
+    memory.status = "draft";
+    memory.curationState = "derived";
+    const guidance = {
+      ...snapshot.guidance[0]!,
+      id: "guidance-model-review-control",
+      state: "candidate" as const,
+      source: "model" as const,
+      linkedEventIds: [event.id]
+    };
+    snapshot.guidance.push(guidance);
+    snapshot.tasks.push({
+      kind: "Task",
+      id: "task-model-review-control",
+      projectId: thread.projectId,
+      sessionId: thread.sessionId,
+      threadId: thread.id,
+      title: "Review generated task",
+      summary: "An evidence-backed task proposal.",
+      status: "proposed",
+      suggestedStatus: "active",
+      priority: "medium",
+      source: "model",
+      sourceEventIds: [event.id],
+      createdAt: event.createdAt,
+      updatedAt: event.updatedAt
+    });
+
+    const memoryState = setShellPrimaryScreen(
+      selectShellMemory(createInitialShellUiState(snapshot), memory.id),
+      "memory"
+    );
+    const memoryMarkup = renderToStaticMarkup(
+      createElement(SubMindShell, {
+        viewModel: createShellViewModel(snapshot, memoryState, {
+          canGenerate: true
+        }),
+        actions: noopActions
+      })
+    );
+    expect(memoryMarkup).toContain("Generate Memory + Task Proposals");
+    expect(memoryMarkup).toContain("Accept Draft");
+    expect(memoryMarkup).toContain("Dismiss Draft");
+
+    const guidanceState = setShellPrimaryScreen(
+      selectShellGuidance(createInitialShellUiState(snapshot), guidance.id),
+      "guidance"
+    );
+    const guidanceMarkup = renderToStaticMarkup(
+      createElement(SubMindShell, {
+        viewModel: createShellViewModel(snapshot, guidanceState, {
+          canGenerate: true
+        }),
+        actions: noopActions
+      })
+    );
+    expect(guidanceMarkup).toContain("Generate Guidance");
+    expect(guidanceMarkup).toContain("Approve as Suggestion");
+    expect(guidanceMarkup).toContain("Suppress Candidate");
+
+    const taskState = setShellPrimaryScreen(
+      selectShellThread(
+        selectShellSession(
+          createInitialShellUiState(snapshot),
+          thread.sessionId
+        ),
+        thread.id
+      ),
+      "sessions"
+    );
+    const taskMarkup = renderToStaticMarkup(
+      createElement(SubMindShell, {
+        viewModel: createShellViewModel(snapshot, taskState, {
+          canGenerate: true
+        }),
+        actions: noopActions
+      })
+    );
+    expect(taskMarkup).toContain("Generate Work Proposals");
+    expect(taskMarkup).toContain("Accept task");
+    expect(taskMarkup).toContain("Reject task");
   });
 
   it("renders the deep sessions screen with threads, event sequence, file changes, and linked context", () => {
@@ -180,7 +282,7 @@ describe("ui-components", () => {
     expect(markup).toContain("Settings / support surface");
     expect(markup).toContain("Editable shell configuration, not a primary screen");
     expect(markup).toContain("Editable shell settings");
-    expect(markup).toContain("Session editable");
+    expect(markup).toContain("Store backed");
     expect(markup).toContain("type=\"number\"");
     expect(markup).toContain("<select");
     expect(markup).toContain("Details / Metrics");
