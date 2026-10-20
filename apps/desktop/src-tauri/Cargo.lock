@@ -4223,15 +4223,23 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 name = "submind-desktop"
 version = "0.1.0"
 dependencies = [
+ "submind-runtime",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-sql",
+]
+
+[[package]]
+name = "submind-runtime"
+version = "0.1.0"
+dependencies = [
  "chrono",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
  "sqlx",
- "tauri",
- "tauri-build",
- "tauri-plugin-sql",
+ "tokio",
 ]
 
 [[package]]
