@@ -17,12 +17,14 @@
     "tauri:dev": "node ../../scripts/run-tauri.mjs dev --config src-tauri/tauri.conf.json"
   },
   "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.3.0",
     "@fontsource/ibm-plex-sans": "^5.2.6",
-    "@fontsource/sora": "^5.2.6",
+    "@fontsource/instrument-serif": "^5.3.0",
     "@submind/core": "workspace:*",
     "@submind/policy": "workspace:*",
-    "@submind/protocol-copilot": "workspace:*",
     "@submind/protocol-codex": "workspace:*",
+    "@submind/protocol-copilot": "workspace:*",
+    "@submind/protocol-hermes": "workspace:*",
     "@submind/shared-schemas": "workspace:*",
     "@submind/store": "workspace:*",
     "@submind/ui-components": "workspace:*",

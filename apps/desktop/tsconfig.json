@@ -23,6 +23,9 @@
       "path": "../../packages/protocol-copilot"
     },
     {
+      "path": "../../packages/protocol-hermes"
+    },
+    {
       "path": "../../packages/shared-schemas"
     },
     {

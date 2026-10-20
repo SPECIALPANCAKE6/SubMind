@@ -25,6 +25,10 @@ export default defineConfig({
         rootDir,
         "packages/protocol-mcp/src/index.ts"
       ),
+      "@submind/protocol-muse": resolve(
+        rootDir,
+        "packages/protocol-muse/src/index.ts"
+      ),
       "@submind/shared-schemas": resolve(
         rootDir,
         "packages/shared-schemas/src/index.ts"

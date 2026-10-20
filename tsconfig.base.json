@@ -38,6 +38,9 @@
       "@submind/protocol-mcp": [
         "packages/protocol-mcp/src/index.ts"
       ],
+      "@submind/protocol-muse": [
+        "packages/protocol-muse/src/index.ts"
+      ],
       "@submind/store": [
         "packages/store/src/index.ts"
       ],

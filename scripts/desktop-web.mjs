@@ -35,13 +35,15 @@ if (!viteEntrypoint) {
   process.exit(1);
 }
 
-await runNode(tscEntrypoint, ["-b", "--force"], rootDir);
+console.log("[desktop-web] Checking TypeScript project references...");
+await runNode(tscEntrypoint, ["-b"], rootDir);
 
 const viteArgs =
   mode === "build"
     ? ["build", "--config", "vite.config.ts"]
     : ["--config", "vite.config.ts"];
 
+console.log(`[desktop-web] Starting Vite ${mode}...`);
 await runNode(viteEntrypoint, viteArgs, desktopDir);
 
 function resolveFirstExisting(candidates) {

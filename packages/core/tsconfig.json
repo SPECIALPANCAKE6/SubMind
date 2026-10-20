@@ -10,8 +10,16 @@
   ],
   "references": [
     {
+      "path": "../policy"
+    },
+    {
       "path": "../shared-schemas"
+    },
+    {
+      "path": "../store"
+    },
+    {
+      "path": "../workers"
     }
   ]
 }
-

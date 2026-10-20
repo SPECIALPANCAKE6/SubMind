@@ -14,7 +14,7 @@
     "desktop:dev": "node scripts/desktop-web.mjs dev",
     "shell:output": "tsc -b --force && node scripts/preview-shell.mjs",
     "typecheck": "tsc -b --pretty",
-    "test": "vitest run packages/shared-schemas/test/shared-schemas.test.ts packages/shared-schemas/test/project-identity.test.ts packages/policy/test/policy.test.ts packages/protocol-codex/test/protocol-codex.test.ts packages/protocol-copilot/test/protocol-copilot.test.ts packages/protocol-hermes/test/protocol-hermes.test.ts packages/protocol-mcp/test/protocol-mcp.test.ts packages/store/test/store.test.ts packages/workers/test/workers.test.ts packages/ui-state/test/ui-state.test.ts packages/ui-components/test/ui-components.test.ts --pool=threads --poolOptions.threads.singleThread"
+    "test": "vitest run packages/core/test/continuity.test.ts packages/core/test/checkpoint-pipeline.test.ts packages/core/test/checkpoint-trigger-queue.test.ts packages/shared-schemas/test/shared-schemas.test.ts packages/shared-schemas/test/project-identity.test.ts packages/policy/test/policy.test.ts packages/protocol-codex/test/protocol-codex.test.ts packages/protocol-copilot/test/protocol-copilot.test.ts packages/protocol-hermes/test/protocol-hermes.test.ts packages/protocol-hermes/test/session-delivery.test.ts packages/protocol-mcp/test/protocol-mcp.test.ts packages/protocol-muse/test/protocol-muse.test.ts packages/store/test/store.test.ts packages/workers/test/workers.test.ts packages/ui-state/test/ui-state.test.ts packages/ui-components/test/ui-components.test.ts --pool=threads --poolOptions.threads.singleThread"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.2",

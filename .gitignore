@@ -1,4 +1,5 @@
 node_modules/
+.pnpm-store/
 dist/
 web-dist/
 target/
@@ -7,3 +8,6 @@ artifacts/
 *.tsbuildinfo
 .DS_Store
 Thumbs.db
+
+# npm lockfile: this repo standardizes on pnpm
+package-lock.json
