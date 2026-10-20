@@ -35,7 +35,9 @@ function resolveVsCodeRemoteUri(value: string): string {
       return pathname;
     }
 
-    return pathname || value;
+    return pathname
+      ? `//vscode-remote/${authority}${pathname}`
+      : `//vscode-remote/${authority}`;
   } catch {
     return value;
   }

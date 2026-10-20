@@ -41,6 +41,7 @@ export interface Project extends BaseEntity {
   description?: string;
   summary?: string;
   workspacePath?: string;
+  workspaceAliases?: string[];
   repositoryRemote?: string;
   descriptors: string[];
 }
@@ -70,9 +71,13 @@ export interface Task extends BaseEntity {
   threadId: string;
   projectId: string;
   title: string;
-  status: "queued" | "active" | "blocked" | "completed";
+  status: "proposed" | "queued" | "active" | "blocked" | "completed" | "rejected";
+  suggestedStatus?: "queued" | "active" | "blocked" | "completed";
   priority: "low" | "medium" | "high";
   summary?: string;
+  source?: "agent" | "model" | "operator";
+  sourceEventIds?: string[];
+  contextEligible?: boolean;
 }
 
 export interface Event extends BaseEntity {
@@ -136,6 +141,7 @@ export interface MemoryItem extends BaseEntity {
   changeSummary?: string;
   isPinned: boolean;
   isEdited: boolean;
+  contextEligible?: boolean;
 }
 
 export interface GuidanceItem extends BaseEntity {
@@ -154,6 +160,7 @@ export interface GuidanceItem extends BaseEntity {
   linkedMemoryItemIds: string[];
   linkedEventIds: string[];
   linkedActionItemIds: string[];
+  contextEligible?: boolean;
 }
 
 export interface ActionItem extends BaseEntity {

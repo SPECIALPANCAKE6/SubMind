@@ -34,6 +34,26 @@ describe("project identity", () => {
     expect(
       normalizeWorkspacePath("file:///home/xtrem/codecraft/SubMind")
     ).toBe("/home/xtrem/codecraft/SubMind");
+    expect(
+      normalizeWorkspacePath(
+        "vscode-remote://ssh-remote%2Bbuildbox/home/xtrem/codecraft/SubMind"
+      )
+    ).toBe("//vscode-remote/ssh-remote+buildbox/home/xtrem/codecraft/SubMind");
+  });
+
+  it("keeps non-WSL remote authorities distinct until an explicit alias links them", () => {
+    const localPath = "/home/xtrem/codecraft/SubMind";
+    const buildBoxPath =
+      "vscode-remote://ssh-remote%2Bbuildbox/home/xtrem/codecraft/SubMind";
+    const stagingPath =
+      "vscode-remote://ssh-remote%2Bstaging/home/xtrem/codecraft/SubMind";
+
+    expect(createProjectGroupingKey(buildBoxPath)).not.toBe(
+      createProjectGroupingKey(localPath)
+    );
+    expect(createProjectGroupingKey(buildBoxPath)).not.toBe(
+      createProjectGroupingKey(stagingPath)
+    );
   });
 
   it("creates the same grouping key and project id for equivalent workspace locators", () => {

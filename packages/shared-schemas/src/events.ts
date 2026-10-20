@@ -11,6 +11,7 @@ export const eventTaxonomy = [
 export type EventTaxonomy = (typeof eventTaxonomy)[number];
 
 export const eventOrigins = [
+  "agent",
   "codex",
   "submind",
   "subagent",

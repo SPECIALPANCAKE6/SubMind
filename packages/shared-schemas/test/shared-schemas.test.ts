@@ -4,11 +4,20 @@ import {
   contextDatumKinds,
   contextSourceEntityKinds,
   coreEntityKinds,
+  currentSettingsConfigVersion,
+  defaultAppSettingsConfig,
+  defaultProfileSettingsConfig,
   defaultSettingsConfigDraft,
   eventOrigins,
   eventNodeCategories,
   eventTaxonomy,
+  getProjectSettingsOverrideCount,
   normalizeSettingsConfig,
+  resolveEffectiveSettingsConfig,
+  settingsConfigEditableKeys,
+  settingsScopes,
+  settingsConfigStorageKey,
+  updateSettingsConfigValue,
   projectStackInteractionRules,
   projectStackTransitions,
   guidanceAggressionModes,
@@ -44,6 +53,7 @@ describe("shared schemas", () => {
     ]);
 
     expect(eventOrigins).toEqual([
+      "agent",
       "codex",
       "submind",
       "subagent",
@@ -74,6 +84,7 @@ describe("shared schemas", () => {
       "project_context",
       "memory",
       "guidance",
+      "task",
       "recent_change",
       "pending_action"
     ]);
@@ -81,6 +92,7 @@ describe("shared schemas", () => {
       "Project",
       "MemoryItem",
       "GuidanceItem",
+      "Task",
       "Event",
       "FileChange",
       "ActionItem"
@@ -88,6 +100,22 @@ describe("shared schemas", () => {
   });
 
   it("defines and normalizes the settings config contract", () => {
+    expect(defaultSettingsConfigDraft.version).toBe(currentSettingsConfigVersion);
+    expect(defaultSettingsConfigDraft.app).toEqual(defaultAppSettingsConfig);
+    expect(defaultSettingsConfigDraft.profile).toEqual(
+      defaultProfileSettingsConfig
+    );
+    expect(defaultSettingsConfigDraft.projectOverrides).toEqual({});
+    expect(settingsScopes).toEqual(["app", "profile", "project"]);
+    expect(settingsConfigStorageKey).toBe("settings_config");
+    expect(settingsConfigEditableKeys).toEqual([
+      "snapshotRefreshMs",
+      "secretAutoHideMs",
+      "guidanceAggression",
+      "actionRiskThreshold",
+      "checkpointMode",
+      "projectStackDensity"
+    ]);
     expect(guidanceAggressionModes).toEqual([
       "restrained",
       "balanced",
@@ -104,14 +132,55 @@ describe("shared schemas", () => {
       "expanded"
     ]);
     expect(normalizeSettingsConfig({
-      ...defaultSettingsConfigDraft,
       snapshotRefreshMs: 90_000,
       secretAutoHideMs: 1_000,
       guidanceAggression: "assertive"
     })).toMatchObject({
-      snapshotRefreshMs: 60_000,
-      secretAutoHideMs: 5_000,
-      guidanceAggression: "assertive"
+      version: currentSettingsConfigVersion,
+      app: {
+        scope: "app",
+        snapshotRefreshMs: 60_000
+      },
+      profile: {
+        scope: "profile",
+        secretAutoHideMs: 5_000,
+        guidanceAggression: "assertive"
+      },
+      projectOverrides: {}
     });
+  });
+
+  it("resolves effective settings with project overrides only when focused", () => {
+    const profileDefault = updateSettingsConfigValue(
+      defaultSettingsConfigDraft,
+      "guidanceAggression",
+      "restrained"
+    );
+    const projectOverride = updateSettingsConfigValue(
+      profileDefault,
+      "guidanceAggression",
+      "assertive",
+      { projectId: "project-submind" }
+    );
+
+    expect(resolveEffectiveSettingsConfig(projectOverride, null)).toMatchObject({
+      projectId: null,
+      guidanceAggression: "restrained",
+      sourceScopes: {
+        guidanceAggression: "profile"
+      }
+    });
+    expect(
+      resolveEffectiveSettingsConfig(projectOverride, "project-submind")
+    ).toMatchObject({
+      projectId: "project-submind",
+      guidanceAggression: "assertive",
+      sourceScopes: {
+        guidanceAggression: "project"
+      }
+    });
+    expect(
+      getProjectSettingsOverrideCount(projectOverride, "project-submind")
+    ).toBe(1);
   });
 });

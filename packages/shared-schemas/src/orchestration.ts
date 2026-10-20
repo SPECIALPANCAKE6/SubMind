@@ -15,7 +15,8 @@ export const modelWorkerKinds = [
   "ranking",
   "composition",
   "linking",
-  "enrichment"
+  "enrichment",
+  "task_synthesis"
 ] as const;
 
 export type ModelWorkerKind = (typeof modelWorkerKinds)[number];
@@ -29,4 +30,3 @@ export const checkpointKinds = [
 ] as const;
 
 export type CheckpointKind = (typeof checkpointKinds)[number];
-

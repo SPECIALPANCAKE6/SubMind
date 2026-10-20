@@ -62,6 +62,7 @@ export const contextDatumKinds = [
   "project_context",
   "memory",
   "guidance",
+  "task",
   "recent_change",
   "pending_action"
 ] as const;
@@ -70,6 +71,7 @@ export const contextSourceEntityKinds = [
   "Project",
   "MemoryItem",
   "GuidanceItem",
+  "Task",
   "Event",
   "FileChange",
   "ActionItem"
@@ -81,6 +83,9 @@ export type ContextSourceEntityKind =
 export type ContextRankingMode = "model" | "deterministic_fallback";
 
 export interface ContextRequest {
+  /** Consumer declaration, not authenticated harness identity. */
+  consumerHarnessId?: string;
+  transport?: "context_api" | "mcp";
   projectId?: string;
   projectQuery?: string;
   threadId?: string;
@@ -114,6 +119,7 @@ export interface ContextDatum {
 }
 
 export interface ContextBundle {
+  delivery?: ContextDeliveryEvidence;
   kind: "ContextBundle";
   apiVersion: typeof subMindExternalApiVersion;
   bundleId: string;
@@ -141,6 +147,7 @@ export interface ContextBundle {
 }
 
 export interface ContextInjectionAuditMetadata {
+  delivery?: ContextDeliveryEvidence;
   bundleId: string;
   promptFingerprint: string;
   rankingMode: ContextRankingMode;
@@ -151,4 +158,12 @@ export interface ContextInjectionAuditMetadata {
   composedContext: string;
   estimatedTokens: number;
   omittedCount: number;
+}
+
+export interface ContextDeliveryEvidence {
+  state: "response_prepared";
+  transport: "context_api" | "mcp";
+  consumerHarnessId?: string;
+  attribution: "self_reported" | "unspecified";
+  consumption: "unverified";
 }

@@ -1,4 +1,5 @@
 export * from "./entities.js";
+export * from "./agent-adapter.js";
 export * from "./events.js";
 export * from "./external-api.js";
 export * from "./orchestration.js";
