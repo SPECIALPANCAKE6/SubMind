@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot } from "react-dom/client";
 import { DesktopApp } from "./App.js";
 import "./styles.css";
+import "./console.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {
