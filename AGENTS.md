@@ -3,7 +3,7 @@
 ## Purpose
 This file governs how Codex agents and helper subagents should build **SubMind**.
 
-SubMind is a **Tauri desktop control plane** for Codex workflows:
+SubMind is a **Tauri desktop control plane** for agent workflows:
 - operator-first
 - project-aware
 - memory-backed
@@ -19,7 +19,7 @@ This document is intentionally opinionated. When in doubt, **follow this file**.
 
 ## What SubMind is
 SubMind is:
-- a **cognitive + operational observability layer** over Codex activity
+- a **cognitive + operational observability layer** over agent activity
 - a **persistent intelligence/control plane**
 - a **desktop operator console** with multiple views
 - a system that helps users understand:
@@ -57,7 +57,7 @@ SubMind uses a **Hybrid bridge architecture**:
 - user experiences one desktop app
 - internal systems remain separable:
   - GUI shell
-  - Codex bridge
+  - agent observation adapters
   - core orchestration
   - store/database
   - worker runtime
@@ -113,7 +113,7 @@ Open in the highest-confidence relevant state:
   - explicit project path
   - “Open project here”
   - opened from repo/workspace
-  - a **very recently active** Codex thread strongly indicates that project
+  - a **very recently active** agent thread strongly indicates that project
 - **global + selected project** if there is a weaker/softer project signal
 - **global + no selection** otherwise
 
@@ -638,7 +638,8 @@ Every Event should conceptually include:
 - `importance` may come later
 
 ## Event origins
-- `codex`
+- `agent`
+- `codex` (legacy compatibility)
 - `submind`
 - `subagent`
 - `system`
@@ -712,7 +713,7 @@ High-level work container for one project.
 Contains many Threads.
 
 ### Thread
-Concrete Codex-related work thread when possible.
+Concrete harness-related work thread when possible.
 Fallback abstraction only if needed.
 
 ### Task
@@ -895,7 +896,7 @@ Do not blur these casually.
 
 ## Deterministic workers (v1)
 Include conceptually:
-- `codex_event_ingestor`
+- `agent_event_ingestor`
 - `event_normalizer`
 - `file_change_extractor`
 - `launch_context_resolver`
@@ -1123,7 +1124,7 @@ Then:
 ## Data strategy
 Use:
 - minimal mock scaffolding
-- real Codex ingestion as soon as schema and receiving shell/screen surfaces exist
+- real agent ingestion as soon as schema and receiving shell/screen surfaces exist
 - replace mocks quickly once real flows are ready
 
 Do not build fake-data-only forever.

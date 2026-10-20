@@ -1,6 +1,8 @@
 # SubMind Docs
 
-This repository is scaffolded around the architecture in `AGENTS.md`.
+SubMind is a cognitive and operational control plane across agent systems. The architecture is governed by `AGENTS.md`.
+
+See [provider-neutral continuity](implementation/provider-neutral-continuity.md) for the adapter boundary, compatibility migration, capability limits, and verification evidence.
 
 Current phase alignment:
 
@@ -25,6 +27,7 @@ The current desktop shell is now on the new runtime stack:
 - Project search is available in the persistent project stack without changing selection or focus scope.
 - A disabled-by-default local API exposes authenticated, read-only project search and exports with secret redaction.
 - Protected values remain redacted in normal UI state and can be revealed temporarily by fingerprint from visible redaction markers.
+- Settings are a support surface with scoped, store-backed product configuration documented in `docs/data-model/settings.md`.
 
 Project and shell behavior is now aligned around the newer primary-screen model:
 

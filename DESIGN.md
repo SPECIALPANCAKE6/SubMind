@@ -1,7 +1,7 @@
 ---
 version: "alpha"
 name: "SubMind Operator Console"
-description: "A dense dark desktop control-plane design system for project-aware Codex workflow observability, memory, guidance, and action review."
+description: "A dense dark desktop control-plane design system for project-aware agent workflow observability, memory, guidance, and action review."
 colors:
   primary: "#7041A3"
   on-primary: "#F4EEFF"
