@@ -1,6 +1,5 @@
 import {
   type ActionItem,
-  checkpointKinds,
   type ContextBundle,
   type ContextDatum,
   type ContextDatumKind,
@@ -9,12 +8,8 @@ import {
   type ContextSourceReference,
   type Event,
   type GuidanceItem,
-  type Project,
-  deterministicWorkerKinds,
-  modelWorkerKinds,
-  type CheckpointKind,
-  type DeterministicWorkerKind,
-  type ModelWorkerKind
+  type MemoryItem,
+  type Project
 } from "@submind/shared-schemas";
 import {
   fingerprintText,
@@ -32,11 +27,27 @@ import {
   type SubMindStoreSnapshot
 } from "@submind/store";
 
-export interface WorkerPlan {
-  checkpoint: CheckpointKind;
-  deterministic: DeterministicWorkerKind[];
-  model: ModelWorkerKind[];
-}
+export {
+  createCheckpointRunAuditEvent,
+  createGeneratedCheckpointProposals,
+  createNativeModelWorkerAdapter,
+  executeCheckpointModelWorkers,
+  type CheckpointWorkerContext,
+  type CheckpointWorkerRun,
+  type CheckpointWorkerScope,
+  type ExecuteCheckpointModelWorkersOptions,
+  type GeneratedCheckpointProposals,
+  type ModelWorkerAdapter,
+  type ModelWorkerExecution,
+  type ModelWorkerInvocation,
+  type ModelWorkerResponse,
+  type NativeModelWorkerInvoke
+} from "./checkpoint-runtime.js";
+export {
+  createWorkerPlan,
+  supportedCheckpoints,
+  type WorkerPlan
+} from "./worker-plan.js";
 
 export interface GuidanceCheckpointSummary {
   guidanceCount: number;
@@ -69,70 +80,6 @@ export interface ActionCheckpointSummary {
   recommendedTitle: string;
   recommendedBody: string;
 }
-
-const defaultDeterministicWorkers = [...deterministicWorkerKinds];
-
-const eventCheckpointModelWorkers: ModelWorkerKind[] = ["extraction"];
-const threadCheckpointModelWorkers: ModelWorkerKind[] = [
-  "summarization",
-  "linking"
-];
-const sessionCheckpointModelWorkers: ModelWorkerKind[] = [
-  "summarization",
-  "ranking",
-  "composition"
-];
-const guidanceCheckpointModelWorkers: ModelWorkerKind[] = [
-  "ranking",
-  "composition"
-];
-const actionCheckpointModelWorkers: ModelWorkerKind[] = [
-  "extraction",
-  "ranking"
-];
-
-export function createWorkerPlan(checkpoint: CheckpointKind): WorkerPlan {
-  switch (checkpoint) {
-    case "event":
-      return {
-        checkpoint,
-        deterministic: defaultDeterministicWorkers,
-        model: eventCheckpointModelWorkers
-      };
-    case "thread":
-      return {
-        checkpoint,
-        deterministic: defaultDeterministicWorkers,
-        model: threadCheckpointModelWorkers
-      };
-    case "session":
-      return {
-        checkpoint,
-        deterministic: defaultDeterministicWorkers,
-        model: sessionCheckpointModelWorkers
-      };
-    case "guidance":
-      return {
-        checkpoint,
-        deterministic: defaultDeterministicWorkers,
-        model: guidanceCheckpointModelWorkers
-      };
-    case "action":
-      return {
-        checkpoint,
-        deterministic: defaultDeterministicWorkers,
-        model: actionCheckpointModelWorkers
-      };
-    default:
-      return {
-        checkpoint,
-        deterministic: defaultDeterministicWorkers,
-        model: []
-      };
-  }
-}
-
-export const supportedCheckpoints = checkpointKinds;
 
 function getGuidanceScopeItems(
   snapshot: SubMindStoreSnapshot,
@@ -404,6 +351,15 @@ function clamp(value: number, minimum: number, maximum: number): number {
 }
 
 function normalizeContextRequest(request: ContextRequest): NormalizedContextRequest {
+  if (request.consumerHarnessId !== undefined && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(request.consumerHarnessId)) {
+    throw new Error("Invalid consumer harness identifier.");
+  }
+  if (request.transport !== undefined && !["mcp", "context_api"].includes(request.transport)) {
+    throw new Error("Unsupported context transport.");
+  }
+  if ([request.maxItems, request.maxTokens].some(value => value !== undefined && !Number.isFinite(value))) {
+    throw new Error("Context limits must be finite numbers.");
+  }
   const prompt = request.prompt.trim();
 
   if (!prompt) {
@@ -583,6 +539,14 @@ function contextKindIsEnabled(
   return !request.kinds || request.kinds.has(kind);
 }
 
+function memoryIsContextEligible(item: MemoryItem): boolean {
+  return item.contextEligible ?? !["archived", "superseded", "draft"].includes(item.status);
+}
+
+function guidanceIsContextEligible(item: GuidanceItem): boolean {
+  return item.contextEligible ?? ["injected", "suggested"].includes(item.state);
+}
+
 export function createContextCandidates(
   snapshot: SubMindStoreSnapshot,
   request: ContextRequest,
@@ -631,6 +595,7 @@ export function createContextCandidates(
       ...getProjectMemoryItems(snapshot, null)
     ].filter(
       (item) =>
+        memoryIsContextEligible(item) &&
         !["archived", "superseded", "draft"].includes(item.status)
     );
 
@@ -686,6 +651,7 @@ export function createContextCandidates(
   if (contextKindIsEnabled(normalizedRequest, "guidance")) {
     for (const item of getProjectGuidanceItems(snapshot, project.id).filter(
       (guidanceItem) =>
+        guidanceIsContextEligible(guidanceItem) &&
         !["suppressed", "resolved"].includes(guidanceItem.state)
     )) {
       const stateBoost = item.state === "injected" ? 0.12 : 0.05;
@@ -712,6 +678,50 @@ export function createContextCandidates(
                 entityType: "Event" as const,
                 entityId: eventId,
                 label: "Guidance evidence event"
+              }))
+            ]
+          },
+          promptTokens,
+          normalizedRequest.threadId
+        )
+      );
+    }
+  }
+
+  if (contextKindIsEnabled(normalizedRequest, "task")) {
+    for (const item of snapshot.tasks.filter(
+      (task) =>
+        task.projectId === project.id &&
+        task.contextEligible === true &&
+        ["queued", "active", "blocked"].includes(task.status)
+    )) {
+      candidates.push(
+        createContextDatum(
+          {
+            id: `context-task-${item.id}`,
+            kind: "task",
+            projectId: project.id,
+            threadId: item.threadId,
+            title: item.title,
+            content: item.summary ?? `${item.status} task`,
+            confidence: item.source === "model" ? 0.78 : 0.9,
+            freshness: calculateTimestampFreshness(item.updatedAt, now),
+            baseScore:
+              item.status === "blocked"
+                ? 0.5
+                : item.status === "active"
+                  ? 0.46
+                  : 0.4,
+            sources: [
+              {
+                entityType: "Task",
+                entityId: item.id,
+                label: item.title
+              },
+              ...(item.sourceEventIds ?? []).map((eventId) => ({
+                entityType: "Event" as const,
+                entityId: eventId,
+                label: "Task evidence event"
               }))
             ]
           },
@@ -849,19 +859,17 @@ function selectWithinContextBudget(
   maxTokens: number
 ): ContextDatum[] {
   const selected: ContextDatum[] = [];
-  let tokenTotal = 0;
 
   for (const item of items) {
     if (selected.length >= maxItems) {
       break;
     }
 
-    if (selected.length > 0 && tokenTotal + item.estimatedTokens > maxTokens) {
+    if (estimateTokens(composeContext([...selected, item])) > maxTokens) {
       continue;
     }
 
     selected.push(item);
-    tokenTotal += item.estimatedTokens;
   }
 
   return selected;
@@ -965,15 +973,23 @@ export async function createContextBundle(
   const deterministicComposition = composeContext(items);
   const composedContext =
     rankingMode === "model" && modelComposition.trim()
+      && estimateTokens(modelComposition.trim()) <= normalizedRequest.maxTokens
       ? modelComposition.trim()
       : deterministicComposition;
   const promptFingerprint = fingerprintText(redactedPrompt);
   const bundleFingerprint = fingerprintText(
-    `${project.id}:${normalizedRequest.threadId ?? "project"}:${promptFingerprint}:${generatedAt}`
+    `${project.id}:${normalizedRequest.threadId ?? "project"}:${request.consumerHarnessId ?? "unspecified"}:${request.transport ?? "context_api"}:${promptFingerprint}:${generatedAt}`
   );
 
   return {
     kind: "ContextBundle",
+    delivery: {
+      state: "response_prepared",
+      transport: request.transport ?? "context_api",
+      ...(request.consumerHarnessId ? { consumerHarnessId: request.consumerHarnessId } : {}),
+      attribution: request.consumerHarnessId ? "self_reported" : "unspecified",
+      consumption: "unverified"
+    },
     apiVersion: "v1",
     bundleId: `context-bundle-${bundleFingerprint}`,
     generatedAt,
@@ -1019,6 +1035,7 @@ export function createContextInjectionAuditEvent(
     (source) => source.entityType === "FileChange"
   );
   const metadata: ContextInjectionAuditMetadata = {
+    ...(bundle.delivery ? { delivery: bundle.delivery } : {}),
     bundleId: bundle.bundleId,
     promptFingerprint: bundle.prompt.fingerprint,
     rankingMode: bundle.ranking.mode,
@@ -1051,3 +1068,6 @@ export function createContextInjectionAuditEvent(
     updatedAt: bundle.generatedAt
   };
 }
+
+/** Compatibility alias: preparation is not proof of model consumption. */
+export const createContextSupplyAuditEvent = createContextInjectionAuditEvent;
