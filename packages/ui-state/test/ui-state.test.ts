@@ -4,7 +4,10 @@ import {
   createPreviewRepository,
   createPreviewStoreSnapshot
 } from "../../store/src/index";
-import { defaultSettingsConfigDraft } from "../../shared-schemas/src/index";
+import {
+  defaultSettingsConfigDraft,
+  resolveEffectiveSettingsConfig
+} from "../../shared-schemas/src/index";
 import {
   clearFocusedShellProject,
   clearShellProjectSelection,
@@ -123,9 +126,16 @@ describe("ui-state", () => {
       "Dashboard / Sessions / Memory / Guidance / Actions"
     );
     expect(settingsViewModel.settings.controls[0]?.label).toBe("Snapshot refresh");
-    expect(settingsViewModel.settings.metrics[0]?.value).toBe("5 seconds");
-    expect(settingsViewModel.settings.detailCards[0]?.title).toContain(
-      "Session-local"
+    expect(
+      settingsViewModel.settings.metrics.find((metric) => metric.id === "version")
+        ?.value
+    ).toBe("v1");
+    expect(
+      settingsViewModel.settings.metrics.find((metric) => metric.id === "refresh")
+        ?.value
+    ).toBe("5 seconds");
+    expect(settingsViewModel.settings.detailCards[0]?.label).toContain(
+      "Persistence Boundary"
     );
     expect(closedState.primaryScreen).toBe("actions");
     expect(closedState.activeSupportSurface).toBeNull();
@@ -133,7 +143,7 @@ describe("ui-state", () => {
     expect(memoryState.activeSupportSurface).toBeNull();
   });
 
-  it("edits settings configuration values and resets the session draft", () => {
+  it("edits settings configuration values and resets the config draft", () => {
     const snapshot = createPreviewStoreSnapshot();
     const initial = createInitialShellUiState(snapshot);
     const refreshed = updateShellSettingsDraft(
@@ -158,13 +168,35 @@ describe("ui-state", () => {
     );
     const reset = resetShellSettingsDraft(risk);
 
-    expect(refreshed.settingsDraft.snapshotRefreshMs).toBe(60_000);
-    expect(secretWindow.settingsDraft.secretAutoHideMs).toBe(5_000);
-    expect(guidance.settingsDraft.guidanceAggression).toBe("assertive");
+    const focusedGuidance = updateShellSettingsDraft(
+      toggleShellProjectFocus(guidance, "project-submind"),
+      "guidanceAggression",
+      "restrained"
+    );
+
+    expect(refreshed.settingsDraft.app.snapshotRefreshMs).toBe(60_000);
+    expect(secretWindow.settingsDraft.profile.secretAutoHideMs).toBe(5_000);
+    expect(guidance.settingsDraft.profile.guidanceAggression).toBe("assertive");
+    expect(
+      focusedGuidance.settingsDraft.projectOverrides["project-submind"]
+        ?.guidanceAggression
+    ).toBe("restrained");
+    expect(
+      resolveEffectiveSettingsConfig(
+        focusedGuidance.settingsDraft,
+        "project-submind"
+      ).guidanceAggression
+    ).toBe("restrained");
     expect(settingsViewModel.settings.controls.some((control) =>
-      control.id === "guidanceAggression" && control.valueLabel === "Assertive"
+      control.id === "guidanceAggression" &&
+      control.scopeLabel === "Profile" &&
+      control.sourceLabel === "Profile default" &&
+      control.valueLabel === "Assertive"
     )).toBe(true);
-    expect(settingsViewModel.settings.metrics[0]?.value).toBe("60 seconds");
+    expect(
+      settingsViewModel.settings.metrics.find((metric) => metric.id === "refresh")
+        ?.value
+    ).toBe("60 seconds");
     expect(settingsViewModel.secretProtection.autoHideMs).toBe(5_000);
     expect(reset.settingsDraft).toEqual(defaultSettingsConfigDraft);
   });

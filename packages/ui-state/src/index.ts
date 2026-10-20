@@ -1,3 +1,4 @@
+import { getEventHarness } from "@submind/shared-schemas";
 import {
   queryOptions,
   useQuery,
@@ -25,11 +26,20 @@ import {
 } from "@submind/workers";
 import { redactSensitiveObject } from "@submind/policy";
 import {
+  currentSettingsConfigVersion,
   checkpointModes,
   defaultSettingsConfigDraft,
+  formatSettingsScopeLabel,
+  formatSettingsSourceLabel,
+  getProjectSettingsOverrideCount,
+  getSettingsControlScope,
   guidanceAggressionModes,
   normalizeSettingsConfig,
   projectStackDensities,
+  resetSettingsConfigDraft,
+  resolveEffectiveSettingsConfig,
+  settingsConfigStorageKey,
+  updateSettingsConfigValue
 } from "@submind/shared-schemas";
 import type {
   ActionItem,
@@ -42,6 +52,7 @@ import type {
   Session,
   SettingsConfigDraft,
   SettingsConfigKey,
+  SettingsConfigScope,
   SettingsConfigValue,
   Task,
   Thread
@@ -168,7 +179,16 @@ export interface SessionTaskItemModel {
   title: string;
   summary: string;
   status: Task["status"];
+  suggestedStatus?: Task["suggestedStatus"];
   priority: Task["priority"];
+  source?: Task["source"];
+  sourceEventCount: number;
+  isReviewable: boolean;
+  contextEligible: boolean;
+  canSetContextEligibility: boolean;
+  canPushToActiveSession: boolean;
+  pushUnavailableReason: string;
+  historyItems: RetainedHistoryItemModel[];
   updatedAtLabel: string;
 }
 
@@ -217,6 +237,7 @@ export interface MemoryCardModel {
   provenanceLabel: string;
   changeLabel: string;
   isPinned: boolean;
+  contextEligible: boolean;
   isActive: boolean;
   isEmphasized: boolean;
 }
@@ -227,6 +248,7 @@ export interface GuidanceCardModel {
   summary: string;
   state: GuidanceItem["state"];
   source: GuidanceItem["source"];
+  contextEligible: boolean;
   projectName: string;
   confidenceLabel: string;
   evidenceLabel: string;
@@ -244,6 +266,7 @@ export interface RetainedHistoryItemModel {
   originLabel: string;
   metaLabel: string;
   isLatest: boolean;
+  canRevert: boolean;
 }
 
 export interface MemoryInspectorModel {
@@ -263,6 +286,8 @@ export interface MemoryInspectorModel {
   sourceFiles: SessionFileChangeItemModel[];
   historyItems: RetainedHistoryItemModel[];
   isPinned: boolean;
+  contextEligible: boolean;
+  canSetContextEligibility: boolean;
 }
 
 export interface GuidanceInspectorModel {
@@ -279,6 +304,10 @@ export interface GuidanceInspectorModel {
   linkedContext: SessionContextLinkModel[];
   evidenceEvents: TraceEventItemModel[];
   historyItems: RetainedHistoryItemModel[];
+  contextEligible: boolean;
+  canSetContextEligibility: boolean;
+  canPushToActiveSession: boolean;
+  pushUnavailableReason: string;
 }
 
 export interface ContextSupplySourceModel {
@@ -298,6 +327,8 @@ export interface ContextSupplyItemModel {
 }
 
 export interface ContextSupplyModel {
+  deliveryLabel: string;
+  outcomeLabel: string;
   hasSupply: boolean;
   eventId: string | null;
   bundleId: string | null;
@@ -384,6 +415,9 @@ export type SettingsControlModel =
       id: SettingsConfigKey;
       label: string;
       description: string;
+      scope: SettingsConfigScope;
+      scopeLabel: string;
+      sourceLabel: string;
       value: string;
       valueLabel: string;
       statusLabel: string;
@@ -401,6 +435,9 @@ export type SettingsControlModel =
       id: SettingsConfigKey;
       label: string;
       description: string;
+      scope: SettingsConfigScope;
+      scopeLabel: string;
+      sourceLabel: string;
       value: number;
       valueLabel: string;
       statusLabel: string;
@@ -435,9 +472,49 @@ export interface ShellViewModelOptions {
   memoryStatusDraft?: MemoryItem["status"] | "";
   memoryPinnedDraft?: boolean | null;
   isMemoryMutationPending?: boolean;
+  canGenerate?: boolean;
+  isGenerationPending?: boolean;
+  generationError?: string | null;
+  isMemoryReviewPending?: boolean;
+  memoryReviewError?: string | null;
+  isGuidanceReviewPending?: boolean;
+  guidanceReviewError?: string | null;
+  isTaskReviewPending?: boolean;
+  taskReviewError?: string | null;
+  isContextEligibilityPending?: boolean;
+  contextEligibilityError?: string | null;
+  isProposalReviewRevertPending?: boolean;
+  proposalReviewRevertError?: string | null;
+  activeSessionDeliveryAvailable?: boolean;
+  activeSessionDeliveryUnavailableReason?: string;
+  isActiveSessionPushPending?: boolean;
+  activeSessionPushError?: string | null;
+  activeSessionPushNotice?: string | null;
+  hermesDelivery?: HermesDeliverySettingsModel | null;
+  isHermesDeliverySavePending?: boolean;
+  hermesDeliverySaveError?: string | null;
+  hermesDeliverySaveNotice?: string | null;
+}
+
+export interface HermesDeliverySettingsModel {
+  configured: boolean;
+  baseUrl: string;
+  allowRemote: boolean;
+  keyConfigured: boolean;
+  keySource: "environment" | "settings" | null;
+  baseUrlFromEnvironment: boolean;
+  allowRemoteFromEnvironment: boolean;
+  reason: string | null;
+}
+
+export interface HermesDeliverySettingsView extends HermesDeliverySettingsModel {
+  isSavePending: boolean;
+  saveError: string | null;
+  saveNotice: string | null;
 }
 
 export interface SubMindShellViewModel {
+  hermesDelivery: HermesDeliverySettingsView | null;
   layoutMode: LayoutMode;
   primaryScreen: PrimaryScreen;
   activeSupportSurface: SupportSurface | null;
@@ -487,6 +564,17 @@ export interface SubMindShellViewModel {
     sessions: SessionListItemModel[];
     threads: SessionThreadItemModel[];
     tasks: SessionTaskItemModel[];
+    canGenerate: boolean;
+    isGenerationPending: boolean;
+    generationError: string | null;
+    isTaskReviewPending: boolean;
+    taskReviewError: string | null;
+    contextEligibilityError: string | null;
+    isProposalReviewRevertPending: boolean;
+    proposalReviewRevertError: string | null;
+    isPushPending: boolean;
+    pushError: string | null;
+    pushNotice: string | null;
     traceItems: TraceEventItemModel[];
     fileChanges: SessionFileChangeItemModel[];
     linkedContext: SessionContextLinkModel[];
@@ -502,6 +590,15 @@ export interface SubMindShellViewModel {
     draftStatus: MemoryItem["status"] | "";
     draftIsPinned: boolean;
     isMutationPending: boolean;
+    canGenerate: boolean;
+    isGenerationPending: boolean;
+    generationError: string | null;
+    isReviewPending: boolean;
+    reviewError: string | null;
+    isContextEligibilityPending: boolean;
+    contextEligibilityError: string | null;
+    isProposalReviewRevertPending: boolean;
+    proposalReviewRevertError: string | null;
   };
   guidance: {
     title: string;
@@ -510,6 +607,18 @@ export interface SubMindShellViewModel {
     cards: GuidanceCardModel[];
     inspector: GuidanceInspectorModel;
     suppliedContext: ContextSupplyModel;
+    canGenerate: boolean;
+    isGenerationPending: boolean;
+    generationError: string | null;
+    isReviewPending: boolean;
+    reviewError: string | null;
+    isContextEligibilityPending: boolean;
+    contextEligibilityError: string | null;
+    isProposalReviewRevertPending: boolean;
+    proposalReviewRevertError: string | null;
+    isPushPending: boolean;
+    pushError: string | null;
+    pushNotice: string | null;
   };
   actions: {
     title: string;
@@ -583,10 +692,6 @@ function pluralize(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
-function clampNumber(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
 function resetEntitySelections(state: ShellUiState): ShellUiState {
   return {
     ...state,
@@ -619,7 +724,7 @@ export function createInitialShellUiState(
     layoutMode: "operator",
     primaryScreen: "dashboard",
     activeSupportSurface: null,
-    settingsDraft: { ...defaultSettingsConfigDraft },
+    settingsDraft: resetSettingsConfigDraft(),
     selectedProjectId:
       snapshot.profiles[0]?.defaultProjectId ?? snapshot.projects[0]?.id ?? null,
     focusedProjectId: null,
@@ -702,51 +807,18 @@ export function updateShellSettingsDraft(
   key: SettingsConfigKey,
   value: SettingsConfigValue
 ): ShellUiState {
-  if (key === "snapshotRefreshMs") {
-    const numericValue = Number(value);
-
-    return {
-      ...state,
-      settingsDraft: {
-        ...state.settingsDraft,
-        snapshotRefreshMs: clampNumber(
-          Number.isFinite(numericValue) ? numericValue : defaultSettingsConfigDraft.snapshotRefreshMs,
-          1_000,
-          60_000
-        )
-      }
-    };
-  }
-
-  if (key === "secretAutoHideMs") {
-    const numericValue = Number(value);
-
-    return {
-      ...state,
-      settingsDraft: {
-        ...state.settingsDraft,
-        secretAutoHideMs: clampNumber(
-          Number.isFinite(numericValue) ? numericValue : defaultSettingsConfigDraft.secretAutoHideMs,
-          5_000,
-          120_000
-        )
-      }
-    };
-  }
-
   return {
     ...state,
-    settingsDraft: {
-      ...state.settingsDraft,
-      [key]: value
-    }
+    settingsDraft: updateSettingsConfigValue(state.settingsDraft, key, value, {
+      projectId: state.focusedProjectId
+    })
   };
 }
 
 export function resetShellSettingsDraft(state: ShellUiState): ShellUiState {
   return {
     ...state,
-    settingsDraft: { ...defaultSettingsConfigDraft }
+    settingsDraft: resetSettingsConfigDraft()
   };
 }
 
@@ -900,7 +972,7 @@ export const useShellStore = create<ShellStore>((set) => ({
   layoutMode: "operator",
   primaryScreen: "dashboard",
   activeSupportSurface: null,
-  settingsDraft: { ...defaultSettingsConfigDraft },
+  settingsDraft: resetSettingsConfigDraft(),
   selectedProjectId: null,
   focusedProjectId: null,
   projectSearchQuery: "",
@@ -952,7 +1024,7 @@ export const useShellStore = create<ShellStore>((set) => ({
 
 export function createShellSnapshotQueryOptions(
   repository: SubMindRepository,
-  refetchIntervalMs: number = defaultSettingsConfigDraft.snapshotRefreshMs
+  refetchIntervalMs: number = defaultSettingsConfigDraft.app.snapshotRefreshMs
 ) {
   return queryOptions({
     queryKey: shellQueryKey,
@@ -976,7 +1048,7 @@ export function createSettingsConfigQueryOptions(
 
 export function useShellSnapshotQuery(
   repository: SubMindRepository = defaultPreviewRepository,
-  refetchIntervalMs: number = defaultSettingsConfigDraft.snapshotRefreshMs
+  refetchIntervalMs: number = defaultSettingsConfigDraft.app.snapshotRefreshMs
 ): UseQueryResult<SubMindStoreSnapshot> {
   return useQuery(createShellSnapshotQueryOptions(repository, refetchIntervalMs));
 }
@@ -1027,43 +1099,9 @@ function formatTitleCase(value: string): string {
     .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
-function detectRuntimeThreadSource(
-  events: Event[]
-): "Codex" | "Copilot" | "Hermes" | "Mixed" | null {
-  const runtimeSources = new Set<"Codex" | "Copilot" | "Hermes">();
-
-  for (const event of events) {
-    const metadataSource =
-      typeof event.metadata.source === "string" ? event.metadata.source : null;
-
-    if (metadataSource?.startsWith("codex") || event.originType === "codex") {
-      runtimeSources.add("Codex");
-    }
-
-    if (
-      metadataSource?.startsWith("copilot") ||
-      event.eventType.startsWith("copilot_")
-    ) {
-      runtimeSources.add("Copilot");
-    }
-
-    if (
-      metadataSource?.startsWith("hermes") ||
-      event.eventType.startsWith("hermes_")
-    ) {
-      runtimeSources.add("Hermes");
-    }
-  }
-
-  if (runtimeSources.size === 0) {
-    return null;
-  }
-
-  if (runtimeSources.size > 1) {
-    return "Mixed";
-  }
-
-  return [...runtimeSources][0] ?? null;
+function detectRuntimeThreadSource(events: Event[]): string | null {
+  const sources = new Set(events.map(getEventHarness).filter((id): id is string => Boolean(id)).map(formatTitleCase));
+  return sources.size > 1 ? "Mixed" : [...sources][0] ?? null;
 }
 
 function detectDerivedThreadSource(events: Event[]): string | null {
@@ -1363,7 +1401,17 @@ function createFocusedContextCards(
       "Project Context",
       activeProject.name,
       contextBody || activeProject.summary || "Project context is still being composed.",
-      "slate"
+      "slate",
+      undefined,
+      [
+        ...(activeProject.workspacePath
+          ? [{ label: "Workspace", value: activeProject.workspacePath }]
+          : []),
+        ...(activeProject.workspaceAliases ?? []).map((alias, index) => ({
+          label: index === 0 ? "Workspace alias" : `Workspace alias ${index + 1}`,
+          value: alias
+        }))
+      ]
     )
   ];
 }
@@ -1914,7 +1962,8 @@ function getSessionScopedMemoryItems(
 function createSessionsView(
   snapshot: SubMindStoreSnapshot,
   state: ShellUiState,
-  activeProject: Project | null
+  activeProject: Project | null,
+  options: ShellViewModelOptions
 ): SubMindShellViewModel["sessions"] {
   const sessionPool = resolveSessionPool(snapshot, activeProject);
   const sessions = sessionPool.map((session) => {
@@ -2104,7 +2153,37 @@ function createSessionsView(
     title: task.title,
     summary: task.summary ?? "No task summary recorded.",
     status: task.status,
+    ...(task.suggestedStatus ? { suggestedStatus: task.suggestedStatus } : {}),
     priority: task.priority,
+    ...(task.source ? { source: task.source } : {}),
+    sourceEventCount: task.sourceEventIds?.length ?? 0,
+    isReviewable: task.source === "model" && task.status === "proposed",
+    contextEligible: task.contextEligible === true,
+    canSetContextEligibility: ["queued", "active", "blocked"].includes(task.status),
+    canPushToActiveSession:
+      options.activeSessionDeliveryAvailable === true &&
+      activeSessionRecord?.status === "active" &&
+      activeThreadRecord?.status === "open" &&
+      task.sessionId === activeSessionRecord.id &&
+      task.threadId === activeThreadRecord.id &&
+      ["queued", "active", "blocked"].includes(task.status),
+    pushUnavailableReason:
+      !activeSessionRecord || !activeThreadRecord
+        ? "Select an active session and open thread first."
+        : !options.activeSessionDeliveryAvailable
+          ? options.activeSessionDeliveryUnavailableReason ??
+            "No active-session delivery adapter is registered."
+          : task.sessionId !== activeSessionRecord.id ||
+              task.threadId !== activeThreadRecord.id
+            ? "This task does not belong to the active thread."
+            : task.status === "proposed" || task.status === "rejected"
+              ? "Review the task before pushing it."
+              : ["queued", "active", "blocked"].includes(task.status)
+                ? "Ready to push to the active session."
+                : "This task cannot be pushed in its current state.",
+    historyItems: createRetainedHistoryItems(
+      snapshot.events.filter((event) => event.taskId === task.id)
+    ),
     updatedAtLabel: formatTimestampLabel(task.updatedAt)
   }));
   const focusDescription = activeThreadRecord
@@ -2122,6 +2201,18 @@ function createSessionsView(
     sessions,
     threads,
     tasks,
+    canGenerate: options.canGenerate ?? false,
+    isGenerationPending: options.isGenerationPending ?? false,
+    generationError: options.generationError ?? null,
+    isTaskReviewPending: options.isTaskReviewPending ?? false,
+    taskReviewError: options.taskReviewError ?? null,
+    contextEligibilityError: options.contextEligibilityError ?? null,
+    isProposalReviewRevertPending:
+      options.isProposalReviewRevertPending ?? false,
+    proposalReviewRevertError: options.proposalReviewRevertError ?? null,
+    isPushPending: options.isActiveSessionPushPending ?? false,
+    pushError: options.activeSessionPushError ?? null,
+    pushNotice: options.activeSessionPushNotice ?? null,
     traceItems,
     fileChanges: traceFileChanges,
     linkedContext,
@@ -2190,8 +2281,19 @@ function createSessionFileChangeItem(
 }
 
 function createRetainedHistoryItems(events: Event[]): RetainedHistoryItemModel[] {
-  return events
-    .sort((left, right) => compareStrings(right.timestamp, left.timestamp))
+  const sortedEvents = [...events].sort((left, right) =>
+    compareStrings(right.timestamp, left.timestamp)
+  );
+  const latestMutationId = sortedEvents.find((event) =>
+    [
+      "memory-curated",
+      "guidance-review",
+      "task-review",
+      "context-eligibility-changed",
+      "proposal-review-reverted"
+    ].includes(event.eventType)
+  )?.id;
+  return sortedEvents
     .slice(0, 6)
     .map((event, index) => ({
       eventId: event.id,
@@ -2201,7 +2303,10 @@ function createRetainedHistoryItems(events: Event[]): RetainedHistoryItemModel[]
       metaLabel: `${formatTitleCase(event.category)} / ${formatTitleCase(
         event.eventType
       )}`,
-      isLatest: index === 0
+      isLatest: index === 0,
+      canRevert:
+        event.id === latestMutationId &&
+        ["memory-curated", "guidance-review", "task-review"].includes(event.eventType)
     }));
 }
 
@@ -2310,6 +2415,9 @@ function createMemoryView(
     )}`,
     changeLabel: memoryItem.changeSummary ?? "No recent change summary.",
     isPinned: memoryItem.isPinned,
+    contextEligible:
+      memoryItem.contextEligible ??
+      !["archived", "superseded", "draft"].includes(memoryItem.status),
     isActive: state.activeMemoryId === memoryItem.id,
     isEmphasized: activeProject?.id === memoryItem.projectId
   }));
@@ -2376,13 +2484,32 @@ function createMemoryView(
         createSessionFileChangeItem(snapshot, fileChange)
       ),
       historyItems,
-      isPinned: activeMemory?.isPinned ?? false
+      isPinned: activeMemory?.isPinned ?? false,
+      contextEligible:
+        activeMemory?.contextEligible ??
+        Boolean(
+          activeMemory &&
+            !["archived", "superseded", "draft"].includes(activeMemory.status)
+        ),
+      canSetContextEligibility:
+        Boolean(activeMemory) &&
+        ["active", "stale"].includes(activeMemory?.status ?? ""),
     },
     draftSummary: options.memorySummaryDraft ?? activeMemory?.summary ?? "",
     draftContent: options.memoryContentDraft ?? activeMemory?.content ?? "",
     draftStatus: options.memoryStatusDraft ?? activeMemory?.status ?? "",
     draftIsPinned: options.memoryPinnedDraft ?? activeMemory?.isPinned ?? false,
-    isMutationPending: options.isMemoryMutationPending ?? false
+    isMutationPending: options.isMemoryMutationPending ?? false,
+    canGenerate: options.canGenerate ?? false,
+    isGenerationPending: options.isGenerationPending ?? false,
+    generationError: options.generationError ?? null,
+    isReviewPending: options.isMemoryReviewPending ?? false,
+    reviewError: options.memoryReviewError ?? null,
+    isContextEligibilityPending: options.isContextEligibilityPending ?? false,
+    contextEligibilityError: options.contextEligibilityError ?? null,
+    isProposalReviewRevertPending:
+      options.isProposalReviewRevertPending ?? false,
+    proposalReviewRevertError: options.proposalReviewRevertError ?? null
   };
 }
 
@@ -2527,6 +2654,8 @@ function createContextSupplyView(
     )
     .sort((left, right) => compareStrings(right.timestamp, left.timestamp))[0];
   const empty: ContextSupplyModel = {
+    deliveryLabel: "No context response recorded",
+    outcomeLabel: "No outcome evidence",
     hasSupply: false,
     eventId: null,
     bundleId: null,
@@ -2565,6 +2694,12 @@ function createContextSupplyView(
     : null;
 
   return {
+    deliveryLabel: isUnknownRecord(metadata.delivery)
+      ? `Response prepared via ${String(metadata.delivery.transport)}${typeof metadata.delivery.consumerHarnessId === "string" ? ` for ${metadata.delivery.consumerHarnessId} (self-reported)` : ""}; consumption unverified`
+      : "Legacy supply record; consumption unverified",
+    outcomeLabel: snapshot.events.some(candidate => candidate.eventType === "context_outcome_observed" && candidate.metadata.deliveryEventId === event.id)
+      ? "Later thread activity observed; usefulness unverified"
+      : "No later thread activity linked",
     hasSupply: true,
     eventId: event.id,
     bundleId: typeof metadata.bundleId === "string" ? metadata.bundleId : null,
@@ -2587,7 +2722,8 @@ function createContextSupplyView(
 function createGuidanceView(
   snapshot: SubMindStoreSnapshot,
   state: ShellUiState,
-  activeProject: Project | null
+  activeProject: Project | null,
+  options: ShellViewModelOptions
 ): SubMindShellViewModel["guidance"] {
   const guidanceCheckpoint = createGuidanceCheckpointSummary(
     snapshot,
@@ -2610,6 +2746,9 @@ function createGuidanceView(
       summary: guidanceItem.summary,
       state: guidanceItem.state,
       source: guidanceItem.source,
+      contextEligible:
+        guidanceItem.contextEligible ??
+        ["injected", "suggested"].includes(guidanceItem.state),
       projectName:
         getProjectById(snapshot, guidanceItem.projectId)?.name ?? "Unknown project",
       confidenceLabel: `${Math.round(guidanceItem.confidence * 100)}% confidence`,
@@ -2635,6 +2774,41 @@ function createGuidanceView(
   const activeGuidanceEvents = activeGuidance
     ? getGuidanceSupportEvents(snapshot, activeGuidance)
     : [];
+  const activeDeliverySession = snapshot.sessions.find(
+    (session) => session.id === state.activeSessionId
+  );
+  const activeDeliveryThread = snapshot.threads.find(
+    (thread) => thread.id === state.activeThreadId
+  );
+  const guidanceCanPush =
+    activeGuidance !== null &&
+    options.activeSessionDeliveryAvailable === true &&
+    activeDeliverySession?.status === "active" &&
+    activeDeliveryThread?.status === "open" &&
+    activeDeliveryThread.sessionId === activeDeliverySession.id &&
+    activeGuidance?.projectId === activeDeliverySession.projectId &&
+    (!activeGuidance.sessionId ||
+      activeGuidance.sessionId === activeDeliverySession.id) &&
+    (!activeGuidance.threadId ||
+      activeGuidance.threadId === activeDeliveryThread.id) &&
+    !["candidate", "suppressed", "resolved"].includes(activeGuidance.state);
+  const guidancePushUnavailableReason =
+    !activeDeliverySession || !activeDeliveryThread
+      ? "Select an active session and open thread first."
+      : !options.activeSessionDeliveryAvailable
+        ? options.activeSessionDeliveryUnavailableReason ??
+          "No active-session delivery adapter is registered."
+        : !activeGuidance
+          ? "Select a guidance package to push."
+          : ["candidate", "suppressed", "resolved"].includes(activeGuidance.state)
+            ? "Review the guidance before pushing it."
+            : activeGuidance.projectId !== activeDeliverySession.projectId ||
+                (activeGuidance.sessionId &&
+                  activeGuidance.sessionId !== activeDeliverySession.id) ||
+                (activeGuidance.threadId &&
+                  activeGuidance.threadId !== activeDeliveryThread.id)
+              ? "The selected guidance does not match the active session scope."
+              : "Ready to push to the active session.";
   const linkedContext: SessionContextLinkModel[] = [
     ...activeGuidanceActions.slice(0, 2).map((actionItem) => ({
       id: `guidance-action:${actionItem.id}`,
@@ -2714,8 +2888,29 @@ function createGuidanceView(
       evidenceEvents: activeGuidanceEvents.map((event) =>
         createTraceEventItem(snapshot, event, true)
       ),
-      historyItems: createRetainedHistoryItems(activeGuidanceEvents)
-    }
+      historyItems: createRetainedHistoryItems(activeGuidanceEvents),
+      contextEligible:
+        activeGuidance?.contextEligible ??
+        Boolean(activeGuidance && ["injected", "suggested"].includes(activeGuidance.state)),
+      canSetContextEligibility:
+        Boolean(activeGuidance) &&
+        !["candidate", "suppressed", "resolved"].includes(activeGuidance?.state ?? ""),
+      canPushToActiveSession: guidanceCanPush,
+      pushUnavailableReason: guidancePushUnavailableReason
+    },
+    canGenerate: options.canGenerate ?? false,
+    isGenerationPending: options.isGenerationPending ?? false,
+    generationError: options.generationError ?? null,
+    isReviewPending: options.isGuidanceReviewPending ?? false,
+    reviewError: options.guidanceReviewError ?? null,
+    isContextEligibilityPending: options.isContextEligibilityPending ?? false,
+    contextEligibilityError: options.contextEligibilityError ?? null,
+    isProposalReviewRevertPending:
+      options.isProposalReviewRevertPending ?? false,
+    proposalReviewRevertError: options.proposalReviewRevertError ?? null,
+    isPushPending: options.isActiveSessionPushPending ?? false,
+    pushError: options.activeSessionPushError ?? null,
+    pushNotice: options.activeSessionPushNotice ?? null
   };
 }
 
@@ -3165,6 +3360,11 @@ function createProtectedShellSnapshot(
 function createSecretProtectionModel(
   state: ShellUiState
 ): SecretProtectionModel {
+  const effectiveSettings = resolveEffectiveSettingsConfig(
+    state.settingsDraft,
+    state.focusedProjectId
+  );
+
   return {
     target: state.secretRevealTarget,
     label: state.secretRevealTarget?.label ?? "No selected secret",
@@ -3172,7 +3372,7 @@ function createSecretProtectionModel(
     isRevealing: !!state.secretRevealTarget,
     redactionCount: 0,
     kindLabels: state.secretRevealTarget ? [state.secretRevealTarget.label] : [],
-    autoHideMs: state.settingsDraft.secretAutoHideMs
+    autoHideMs: effectiveSettings.secretAutoHideMs
   };
 }
 
@@ -3190,35 +3390,11 @@ function createProjectSearchResultLabel(
     : `${filteredCount} of ${totalCount} projects`;
 }
 
-type SettingsRuntimeSource = "Codex" | "Copilot" | "Hermes" | "SubMind";
+type SettingsRuntimeSource = string;
 
-function detectEventRuntimeSource(event: Event): SettingsRuntimeSource | null {
-  const metadataSource =
-    typeof event.metadata.source === "string" ? event.metadata.source : null;
-
-  if (metadataSource?.startsWith("codex") || event.originType === "codex") {
-    return "Codex";
-  }
-
-  if (
-    metadataSource?.startsWith("copilot") ||
-    event.eventType.startsWith("copilot_")
-  ) {
-    return "Copilot";
-  }
-
-  if (
-    metadataSource?.startsWith("hermes") ||
-    event.eventType.startsWith("hermes_")
-  ) {
-    return "Hermes";
-  }
-
-  if (event.originType === "submind") {
-    return "SubMind";
-  }
-
-  return null;
+function detectEventRuntimeSource(event: Event): string | null {
+  const harness = getEventHarness(event);
+  return harness ? formatTitleCase(harness) : event.originType === "submind" ? "SubMind" : null;
 }
 
 function createRuntimeSourceSettings(
@@ -3242,7 +3418,7 @@ function createRuntimeSourceSettings(
     }
   }
 
-  return sourceOrder.map((source) => {
+  return [...new Set([...sourceOrder, ...eventCounts.keys()])].map((source) => {
     const eventCount = eventCounts.get(source) ?? 0;
     const isLive = eventCount > 0;
 
@@ -3313,10 +3489,24 @@ function createSettingsControls(
   openActions: number,
   injectedGuidance: number
 ): SettingsControlModel[] {
+  const effectiveSettings = resolveEffectiveSettingsConfig(
+    state.settingsDraft,
+    state.focusedProjectId
+  );
   const riskAtThreshold = countActionsAtOrAboveRisk(
     snapshot.actions,
-    state.settingsDraft.actionRiskThreshold
+    effectiveSettings.actionRiskThreshold
   );
+  const createScopeFields = (key: SettingsConfigKey) => {
+    const writeScope = getSettingsControlScope(key, state.focusedProjectId);
+
+    return {
+      scope: writeScope,
+      scopeLabel: formatSettingsScopeLabel(writeScope),
+      sourceLabel: formatSettingsSourceLabel(effectiveSettings.sourceScopes[key]),
+      statusLabel: formatSettingsSourceLabel(writeScope)
+    };
+  };
 
   return [
     {
@@ -3324,9 +3514,9 @@ function createSettingsControls(
       label: "Snapshot refresh",
       description:
         "Controls how often the desktop shell asks the repository for a fresh operator snapshot while visible.",
-      value: state.settingsDraft.snapshotRefreshMs,
-      valueLabel: formatSeconds(state.settingsDraft.snapshotRefreshMs),
-      statusLabel: "Session editable",
+      ...createScopeFields("snapshotRefreshMs"),
+      value: effectiveSettings.snapshotRefreshMs,
+      valueLabel: formatSeconds(effectiveSettings.snapshotRefreshMs),
       tone: "violet",
       control: {
         kind: "number",
@@ -3336,7 +3526,7 @@ function createSettingsControls(
         unitLabel: "ms"
       },
       metrics: [
-        { label: "Current interval", value: formatSeconds(state.settingsDraft.snapshotRefreshMs) },
+        { label: "Current interval", value: formatSeconds(effectiveSettings.snapshotRefreshMs) },
         { label: "Snapshot rows", value: String(snapshot.events.length) }
       ]
     },
@@ -3345,9 +3535,9 @@ function createSettingsControls(
       label: "Secret reveal window",
       description:
         "Controls how long a revealed redaction remains visible before the shell automatically hides it again.",
-      value: state.settingsDraft.secretAutoHideMs,
-      valueLabel: formatSeconds(state.settingsDraft.secretAutoHideMs),
-      statusLabel: "Session editable",
+      ...createScopeFields("secretAutoHideMs"),
+      value: effectiveSettings.secretAutoHideMs,
+      valueLabel: formatSeconds(effectiveSettings.secretAutoHideMs),
       tone: "amber",
       control: {
         kind: "number",
@@ -3357,7 +3547,7 @@ function createSettingsControls(
         unitLabel: "ms"
       },
       metrics: [
-        { label: "Auto-hide", value: formatSeconds(state.settingsDraft.secretAutoHideMs) },
+        { label: "Auto-hide", value: formatSeconds(effectiveSettings.secretAutoHideMs) },
         { label: "Reveal state", value: state.secretRevealTarget ? "revealing" : "hidden" }
       ]
     },
@@ -3365,10 +3555,10 @@ function createSettingsControls(
       id: "guidanceAggression",
       label: "Guidance aggression",
       description:
-        "Controls how strongly SubMind should lean toward surfacing guidance candidates. Pipeline persistence will attach to policy settings later.",
-      value: state.settingsDraft.guidanceAggression,
-      valueLabel: formatTitleCase(state.settingsDraft.guidanceAggression),
-      statusLabel: "Session editable",
+        "Controls how strongly SubMind should lean toward surfacing guidance candidates. In focused scope this writes a project override.",
+      ...createScopeFields("guidanceAggression"),
+      value: effectiveSettings.guidanceAggression,
+      valueLabel: formatTitleCase(effectiveSettings.guidanceAggression),
       tone: "plum",
       control: {
         kind: "select",
@@ -3392,10 +3582,10 @@ function createSettingsControls(
       id: "actionRiskThreshold",
       label: "Action risk threshold",
       description:
-        "Controls which action risk levels are treated as prominent in Settings metrics. Action state transitions still happen in Actions.",
-      value: state.settingsDraft.actionRiskThreshold,
-      valueLabel: formatTitleCase(state.settingsDraft.actionRiskThreshold),
-      statusLabel: "Session editable",
+        "Controls which action risk levels are treated as prominent. In focused scope this writes a project override.",
+      ...createScopeFields("actionRiskThreshold"),
+      value: effectiveSettings.actionRiskThreshold,
+      valueLabel: formatTitleCase(effectiveSettings.actionRiskThreshold),
       tone: riskAtThreshold > 0 ? "amber" : "slate",
       control: {
         kind: "select",
@@ -3414,10 +3604,10 @@ function createSettingsControls(
       id: "checkpointMode",
       label: "Checkpoint mode",
       description:
-        "Controls the preferred checkpoint posture shown to workers and future policy settings.",
-      value: state.settingsDraft.checkpointMode,
-      valueLabel: formatTitleCase(state.settingsDraft.checkpointMode),
-      statusLabel: "Session editable",
+        "Controls the preferred checkpoint posture. In focused scope this writes a project override.",
+      ...createScopeFields("checkpointMode"),
+      value: effectiveSettings.checkpointMode,
+      valueLabel: formatTitleCase(effectiveSettings.checkpointMode),
       tone: "violet",
       control: {
         kind: "select",
@@ -3442,9 +3632,9 @@ function createSettingsControls(
       label: "Project stack density",
       description:
         "Controls the preferred Project Stack density signal. Full layout-specific density behavior can bind to this setting later.",
-      value: state.settingsDraft.projectStackDensity,
-      valueLabel: formatTitleCase(state.settingsDraft.projectStackDensity),
-      statusLabel: "Session editable",
+      ...createScopeFields("projectStackDensity"),
+      value: effectiveSettings.projectStackDensity,
+      valueLabel: formatTitleCase(effectiveSettings.projectStackDensity),
       tone: "slate",
       control: {
         kind: "select",
@@ -3473,26 +3663,41 @@ function createSettingsMetrics(
   runtimeSources: SettingsRuntimeSourceModel[],
   openActions: number
 ): SettingsMetricModel[] {
+  const effectiveSettings = resolveEffectiveSettingsConfig(
+    state.settingsDraft,
+    state.focusedProjectId
+  );
   const observedSourceCount = runtimeSources.filter(
     (source) => source.statusLabel === "Observed"
   ).length;
   const riskAtThreshold = countActionsAtOrAboveRisk(
     snapshot.actions,
-    state.settingsDraft.actionRiskThreshold
+    effectiveSettings.actionRiskThreshold
+  );
+  const projectOverrideCount = getProjectSettingsOverrideCount(
+    state.settingsDraft,
+    state.focusedProjectId
   );
 
   return [
     {
+      id: "version",
+      label: "Config Version",
+      value: `v${state.settingsDraft.version}`,
+      detail: `Settings normalize to schema v${currentSettingsConfigVersion} before they are written to ${settingsConfigStorageKey}.`,
+      tone: "slate"
+    },
+    {
       id: "refresh",
       label: "Refresh Interval",
-      value: formatSeconds(state.settingsDraft.snapshotRefreshMs),
+      value: formatSeconds(effectiveSettings.snapshotRefreshMs),
       detail: "Live TanStack Query refetch cadence for the shell snapshot.",
       tone: "violet"
     },
     {
       id: "redaction",
       label: "Redaction Guard",
-      value: formatSeconds(state.settingsDraft.secretAutoHideMs),
+      value: formatSeconds(effectiveSettings.secretAutoHideMs),
       detail: "Current auto-hide window for revealed protected values.",
       tone: "amber"
     },
@@ -3501,9 +3706,19 @@ function createSettingsMetrics(
       label: "Risk At Threshold",
       value: `${riskAtThreshold} / ${snapshot.actions.length}`,
       detail: `${formatTitleCase(
-        state.settingsDraft.actionRiskThreshold
+        effectiveSettings.actionRiskThreshold
       )} and higher actions, with ${openActions} currently open.`,
       tone: riskAtThreshold > 0 ? "amber" : "slate"
+    },
+    {
+      id: "overrides",
+      label: "Project Overrides",
+      value: state.focusedProjectId ? String(projectOverrideCount) : "Inactive",
+      detail:
+        state.focusedProjectId
+          ? "Focused project overrides apply on top of profile defaults."
+          : "Project overrides are visible but not applied until a project is focused.",
+      tone: projectOverrideCount > 0 ? "plum" : "slate"
     },
     {
       id: "sources",
@@ -3523,6 +3738,10 @@ function createSettingsView(
   secretProtection: SecretProtectionModel
 ): SubMindShellViewModel["settings"] {
   const profile = snapshot.profiles[0] ?? null;
+  const effectiveSettings = resolveEffectiveSettingsConfig(
+    state.settingsDraft,
+    state.focusedProjectId
+  );
   const currentPrimaryScreen = formatTitleCase(state.primaryScreen);
   const activeSupportSurfaceLabel = state.activeSupportSurface
     ? formatTitleCase(state.activeSupportSurface)
@@ -3537,6 +3756,14 @@ function createSettingsView(
   const injectedGuidance = snapshot.guidance.filter(
     (guidanceItem) => guidanceItem.state === "injected"
   ).length;
+  const selectedProjectOverrideCount = getProjectSettingsOverrideCount(
+    state.settingsDraft,
+    state.selectedProjectId
+  );
+  const focusedProjectOverrideCount = getProjectSettingsOverrideCount(
+    state.settingsDraft,
+    state.focusedProjectId
+  );
   const runtimeSources = createRuntimeSourceSettings(snapshot);
   const controls = createSettingsControls(
     snapshot,
@@ -3559,11 +3786,12 @@ function createSettingsView(
       "settings-posture",
       "Settings Surface",
       "Editable shell configuration, not a primary screen",
-      `Settings is open over ${currentPrimaryScreen}. Configuration changes apply to this shell session now; store-backed profile and project settings can persist them later.`,
+      `Settings is open over ${currentPrimaryScreen}. Configuration changes are normalized against schema v${currentSettingsConfigVersion} and persisted as a scoped app/profile/project settings bundle.`,
       "slate",
       [
         "support surface",
-        "session editable",
+        "store backed",
+        `schema v${currentSettingsConfigVersion}`,
         `${pluralize(snapshot.projects.length, "project")}`,
         `${pluralize(openActions, "open action")}`
       ],
@@ -3576,6 +3804,10 @@ function createSettingsView(
         {
           label: "Active project",
           value: activeProject?.name ?? "None"
+        },
+        {
+          label: "Effective override",
+          value: state.focusedProjectId ? "Focused project" : "Profile default"
         }
       ]
     ),
@@ -3585,24 +3817,24 @@ function createSettingsView(
       createCard(
         "settings-detail-persistence",
         "Persistence Boundary",
-        "Session-local until settings schema lands",
-        "The controls on this page update live shell behavior and derived Settings metrics. They do not claim durable profile or project persistence until the store contract adds explicit settings fields.",
+        `${settingsConfigStorageKey} / v${state.settingsDraft.version}`,
+        "Settings persist as one versioned JSON value in app_state. Inside that record, app settings, profile defaults, and project overrides have separate contracts.",
         "slate",
-        ["explicit boundary", "no silent persistence"]
+        ["explicit boundary", "scoped payload"]
       ),
       createCard(
         "settings-detail-policy",
         "Policy Posture",
-        formatTitleCase(state.settingsDraft.guidanceAggression),
+        formatTitleCase(effectiveSettings.guidanceAggression),
         `Guidance aggression is currently ${formatTitleCase(
-          state.settingsDraft.guidanceAggression
+          effectiveSettings.guidanceAggression
         )}; checkpoint mode is ${formatTitleCase(
-          state.settingsDraft.checkpointMode
-        )}. These values give the future policy layer a clear control shape.`,
+          effectiveSettings.checkpointMode
+        )}. In focused project scope, override-capable controls write project overrides instead of profile defaults.`,
         "violet",
         [
-          `risk threshold ${formatTitleCase(state.settingsDraft.actionRiskThreshold)}`,
-          `stack ${formatTitleCase(state.settingsDraft.projectStackDensity)}`
+          `risk threshold ${formatTitleCase(effectiveSettings.actionRiskThreshold)}`,
+          `stack ${formatTitleCase(effectiveSettings.projectStackDensity)}`
         ]
       ),
       createCard(
@@ -3610,12 +3842,16 @@ function createSettingsView(
         "Audit Guardrails",
         `${pluralize(openActions, "open action")}`,
         `Action risk metrics count ${formatTitleCase(
-          state.settingsDraft.actionRiskThreshold
+          effectiveSettings.actionRiskThreshold
         )} and higher. Secrets auto-hide after ${formatSeconds(
-          state.settingsDraft.secretAutoHideMs
+          effectiveSettings.secretAutoHideMs
         )}.`,
         openActions > 0 ? "amber" : "slate",
-        [`${pluralize(activeMemory, "active memory")}`, `${pluralize(injectedGuidance, "injected guidance")}`]
+        [
+          `${pluralize(activeMemory, "active memory")}`,
+          `${pluralize(injectedGuidance, "injected guidance")}`,
+          `${focusedProjectOverrideCount} focused overrides`
+        ]
       )
     ],
     sections: [
@@ -3680,6 +3916,24 @@ function createSettingsView(
             "Focus narrows primary screen content into the project room while keeping the Project Stack visible.",
             "Runtime state",
             state.focusedProjectId ? "plum" : "slate"
+          ),
+          createSettingsRow(
+            "selected-project-overrides",
+            "Selected overrides",
+            `${selectedProjectOverrideCount} override fields`,
+            "Selected project overrides are visible here but do not change effective settings until the project is focused.",
+            "Visible only",
+            selectedProjectOverrideCount > 0 ? "violet" : "slate"
+          ),
+          createSettingsRow(
+            "focused-project-overrides",
+            "Focused overrides",
+            state.focusedProjectId
+              ? `${focusedProjectOverrideCount} applied fields`
+              : "None applied",
+            "Focused project overrides apply on top of profile defaults for guidance, action risk, and checkpoint posture.",
+            state.focusedProjectId ? "Applied" : "Inactive",
+            focusedProjectOverrideCount > 0 ? "plum" : "slate"
           )
         ]
       },
@@ -3704,8 +3958,8 @@ function createSettingsView(
               snapshot.guidance.length,
               "package"
             )}`,
-            "Guidance settings are read-only here until tuning policy gets persisted profile or project settings.",
-            "Read only",
+            "Guidance posture is editable here. Global scope writes the profile default; focused project scope writes the project override.",
+            "Scoped control",
             injectedGuidance > 0 ? "plum" : "slate"
           ),
           createSettingsRow(
@@ -3733,8 +3987,16 @@ function createSettingsView(
         id: "profile-store",
         title: "Profile And Store",
         body:
-          "Current profile and snapshot repository facts. Persistent settings writes can attach here when the store contract lands.",
+          "Current profile and snapshot repository facts. The settings payload separates app settings, profile defaults, and focused-project overrides.",
         rows: [
+          createSettingsRow(
+            "settings-schema-version",
+            "Settings schema",
+            `v${state.settingsDraft.version}`,
+            `The active settings config is normalized to v${currentSettingsConfigVersion} and stored with key ${settingsConfigStorageKey}.`,
+            "Store backed",
+            "slate"
+          ),
           createSettingsRow(
             "active-profile",
             "Active profile",
@@ -3757,7 +4019,7 @@ function createSettingsView(
           createSettingsRow(
             "snapshot-refresh",
             "Snapshot refresh",
-            formatSeconds(state.settingsDraft.snapshotRefreshMs),
+            formatSeconds(effectiveSettings.snapshotRefreshMs),
             "The desktop shell refreshes snapshot data on the configured interval while the app is visible.",
             "Live query",
             "slate"
@@ -3900,9 +4162,9 @@ export function createShellViewModel(
       }))
     },
     dashboard: createDashboardView(viewSnapshot, state, activeProject),
-    sessions: createSessionsView(viewSnapshot, state, activeProject),
+    sessions: createSessionsView(viewSnapshot, state, activeProject, viewOptions),
     memory: createMemoryView(viewSnapshot, state, activeProject, viewOptions),
-    guidance: createGuidanceView(viewSnapshot, state, activeProject),
+    guidance: createGuidanceView(viewSnapshot, state, activeProject, viewOptions),
     actions: createActionsView(viewSnapshot, state, activeProject, viewOptions),
     settings: createSettingsView(
       viewSnapshot,
@@ -3910,6 +4172,14 @@ export function createShellViewModel(
       activeProject,
       scope,
       secretProtection
-    )
+    ),
+    hermesDelivery: viewOptions.hermesDelivery
+      ? {
+          ...viewOptions.hermesDelivery,
+          isSavePending: viewOptions.isHermesDeliverySavePending ?? false,
+          saveError: viewOptions.hermesDeliverySaveError ?? null,
+          saveNotice: viewOptions.hermesDeliverySaveNotice ?? null
+        }
+      : null
   };
 }
