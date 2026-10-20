@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+#
+# submind-context-mcp — platform-agnostic MCP stdio wrapper for SubMind.
+#
+# Unlike the old windows-curl-only wrapper, this one:
+#   1. Ensures a HEADLESS SubMind API is running in the SAME OS as this
+#      process (via scripts/submind-serve), so native fetch/curl works and
+#      no Windows GUI or windows-curl shim is required.
+#   2. Falls back to the windows-curl transport only if the API is NOT
+#      reachable locally but IS reachable via the Windows curl.exe (legacy
+#      setup where the desktop app owns the API).
+#
+# Works from WSL, Linux, macOS, or Windows.
+#
+set -euo pipefail
+
+SUBMIND_REPO="${SUBMIND_REPO:-/mnt/c/Users/xtrem/OneDrive/Documents/codecraft/SubMind}"
+SUBMIND_SERVER="$SUBMIND_REPO/packages/protocol-mcp/dist/mcp-server.js"
+SUBMIND_SERVE="$SUBMIND_REPO/scripts/submind-serve"
+PORT="${SUBMIND_API_PORT:-47821}"
+BASE_URL="http://127.0.0.1:$PORT"
+SUBMIND_MCP_LOG="${SUBMIND_MCP_LOG:-$HOME/.local/state/submind/mcp-wrapper.log}"
+
+mkdir -p "$(dirname "$SUBMIND_MCP_LOG")"
+
+# --- token: portable detection (env > Windows shared file > WSL config) -----
+detect_token() {
+  if [[ -n "${SUBMIND_API_TOKEN:-}" ]]; then printf '%s' "$SUBMIND_API_TOKEN"; return; fi
+  local c
+  for c in \
+    "/mnt/c/Users/xtrem/.config/submind/api-token" \
+    "$HOME/.config/submind/api-token"; do
+    if [[ -s "$c" ]]; then tr -d '\r\n' < "$c"; return; fi
+  done
+  return 1
+}
+
+TOKEN="$(detect_token || true)"
+if [[ -z "$TOKEN" ]]; then
+  echo "submind-context-mcp: no SUBMIND_API_TOKEN found (env or token file)" >> "$SUBMIND_MCP_LOG"
+  exit 1
+fi
+export SUBMIND_API_TOKEN="$TOKEN"
+export SUBMIND_API_URL="$BASE_URL"
+
+# --- ensure a local headless API is up (same OS) ----------------------------
+TRANSPORT="native"
+if [[ -x "$SUBMIND_SERVE" ]]; then
+  "$SUBMIND_SERVE" ensure >> "$SUBMIND_MCP_LOG" 2>&1 || true
+fi
+
+# --- decide transport: native if locally reachable, else windows-curl -------
+if curl -sf -m 3 -H "Authorization: Bearer $TOKEN" "$BASE_URL/v1/health" >/dev/null 2>&1; then
+  TRANSPORT="native"
+  unset SUBMIND_API_TRANSPORT 2>/dev/null || true
+else
+  # Legacy: API lives in the Windows GUI namespace; use windows-curl shim.
+  if [[ -x /mnt/c/Windows/System32/curl.exe ]]; then
+    TRANSPORT="windows-curl"
+    export SUBMIND_API_TRANSPORT="windows-curl"
+    export SUBMIND_WINDOWS_CURL="${SUBMIND_WINDOWS_CURL:-/mnt/c/Windows/System32/curl.exe}"
+  else
+    echo "submind-context-mcp: API not reachable locally and no windows-curl fallback" >> "$SUBMIND_MCP_LOG"
+    exit 1
+  fi
+fi
+
+{
+  printf '[%s] starting submind-context-mcp\n' "$(date -Is)"
+  printf 'node=%s\n' "$(command -v node || true)"
+  printf 'server=%s\n' "$SUBMIND_SERVER"
+  printf 'api_url=%s\n' "$BASE_URL"
+  printf 'transport=%s\n' "$TRANSPORT"
+} < /dev/null >> "$SUBMIND_MCP_LOG" 2>&1
+
+test -f "$SUBMIND_SERVER" || { echo "submind-context-mcp: missing $SUBMIND_SERVER (run npm run context:mcp:build)" >> "$SUBMIND_MCP_LOG"; exit 1; }
+
+exec node "$SUBMIND_SERVER" 2>> "$SUBMIND_MCP_LOG"

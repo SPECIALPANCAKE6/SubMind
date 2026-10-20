@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+#
+# submind-serve — platform-agnostic headless SubMind API launcher.
+#
+# Runs the SAME external API the Tauri desktop app exposes, but headless:
+# no GUI, no Windows requirement. It serves a SQLite DB read-only over
+# 127.0.0.1:47821, so any consumer on the SAME OS (WSL, Linux, macOS,
+# Windows) can reach it with native fetch/curl — no windows-curl shim.
+#
+# Usage:
+#   submind-serve start     # build-if-needed, start headless API, health-check
+#   submind-serve stop      # stop a running instance started by this script
+#   submind-serve status    # print health + pid
+#   submind-serve ensure    # start only if not already healthy (idempotent)
+#   submind-serve tail      # start, then follow the log
+#
+# Env overrides:
+#   SUBMIND_DB        SQLite path to serve (default: auto-detect)
+#   SUBMIND_API_TOKEN token (>=32 chars) (default: auto-detect)
+#   SUBMIND_API_PORT  listen port (default: 47821)
+#   SUBMIND_REPO      repo root (default: parent of this script's dir)
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SUBMIND_REPO="${SUBMIND_REPO:-$(cd "$SCRIPT_DIR/.." && pwd -P)}"
+RUNTIME_PKG="$SUBMIND_REPO/packages/runtime-native"
+BIN="$RUNTIME_PKG/target/debug/submind-runtime"
+PORT="${SUBMIND_API_PORT:-47821}"
+BASE_URL="http://127.0.0.1:$PORT"
+STATE_DIR="${SUBMIND_STATE_DIR:-$HOME/.local/state/submind}"
+PID_FILE="$STATE_DIR/headless.pid"
+LOG_FILE="$STATE_DIR/headless.log"
+
+# --- auto-detect DB: prefer the one with the most data (largest file) -------
+detect_db() {
+  if [[ -n "${SUBMIND_DB:-}" ]]; then
+    printf '%s' "$SUBMIND_DB"; return
+  fi
+  local candidates=(
+    "$HOME/.config/com.submind.desktop/submind.db"
+    "/mnt/c/Users/xtrem/AppData/Roaming/com.submind.desktop/submind.db"
+  )
+  local best="" best_size=-1 c size
+  for c in "${candidates[@]}"; do
+    if [[ -f "$c" ]]; then
+      size=$(stat -c%s "$c" 2>/dev/null || stat -f%z "$c" 2>/dev/null || echo 0)
+      if (( size > best_size )); then best_size=$size; best="$c"; fi
+    fi
+  done
+  printf '%s' "$best"
+}
+
+# --- auto-detect token -------------------------------------------------------
+detect_token() {
+  if [[ -n "${SUBMIND_API_TOKEN:-}" ]]; then
+    printf '%s' "$SUBMIND_API_TOKEN"; return
+  fi
+  local candidates=(
+    "/mnt/c/Users/xtrem/.config/submind/api-token"
+    "$HOME/.config/submind/api-token"
+  )
+  local c
+  for c in "${candidates[@]}"; do
+    if [[ -s "$c" ]]; then
+      tr -d '\r\n' < "$c"; return
+    fi
+  done
+  return 1
+}
+
+ensure_binary() {
+  if [[ -x "$BIN" ]]; then return 0; fi
+  echo "submind-serve: building submind-runtime (first run)..." >&2
+  ( cd "$RUNTIME_PKG" && cargo build --bin submind-runtime ) >&2
+  [[ -x "$BIN" ]] || { echo "submind-serve: build failed" >&2; return 1; }
+}
+
+is_healthy() {
+  local token="${1:-}"
+  [[ -n "$token" ]] || return 1
+  curl -sf -m 3 -H "Authorization: Bearer $token" "$BASE_URL/v1/health" >/dev/null 2>&1
+}
+
+read_pid() { [[ -f "$PID_FILE" ]] && cat "$PID_FILE" 2>/dev/null || true; }
+
+cmd="${1:-status}"
+mkdir -p "$STATE_DIR"
+
+case "$cmd" in
+  start|ensure|tail)
+    if is_healthy "$(detect_token 2>/dev/null || true)"; then
+      echo "submind-serve: already healthy at $BASE_URL" >&2
+      [[ "$cmd" == "tail" ]] && { tail -f "$LOG_FILE"; exit 0; }
+      exit 0
+    fi
+    ensure_binary
+    DB="$(detect_db)"
+    [[ -n "$DB" && -f "$DB" ]] || { echo "submind-serve: no submind.db found (set SUBMIND_DB)" >&2; exit 1; }
+    TOKEN="$(detect_token)" || { echo "submind-serve: no token found (set SUBMIND_API_TOKEN)" >&2; exit 1; }
+    (( ${#TOKEN} >= 32 )) || { echo "submind-serve: token too short (<32 chars)" >&2; exit 1; }
+    echo "submind-serve: serving $DB on $BASE_URL" >&2
+    SUBMIND_API_TOKEN="$TOKEN" nohup "$BIN" serve "$DB" >> "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+    # wait for readiness (up to ~10s)
+    for _ in $(seq 1 20); do
+      if is_healthy "$TOKEN"; then
+        echo "submind-serve: ready (pid $(cat "$PID_FILE"))" >&2
+        [[ "$cmd" == "tail" ]] && exec tail -f "$LOG_FILE"
+        exit 0
+      fi
+      sleep 0.5
+    done
+    echo "submind-serve: started but not healthy yet; log: $LOG_FILE" >&2
+    exit 1
+    ;;
+  stop)
+    PID="$(read_pid)"
+    if [[ -n "$PID" ]] && kill -0 "$PID" 2>/dev/null; then
+      kill "$PID" && echo "submind-serve: stopped pid $PID" >&2
+    else
+      echo "submind-serve: no running instance (pid file stale or absent)" >&2
+    fi
+    rm -f "$PID_FILE"
+    ;;
+  status)
+    TOKEN="$(detect_token 2>/dev/null || true)"
+    if is_healthy "$TOKEN"; then
+      echo "submind-serve: healthy at $BASE_URL" >&2
+      curl -s -m 3 -H "Authorization: Bearer $TOKEN" "$BASE_URL/v1/health" >&2; echo >&2
+    else
+      echo "submind-serve: not running" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Usage: submind-serve {start|stop|status|ensure|tail}" >&2
+    exit 2
+    ;;
+esac
