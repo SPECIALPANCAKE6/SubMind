@@ -15,13 +15,18 @@ import type {
   Thread
 } from "@submind/shared-schemas";
 import {
-  defaultSettingsConfigDraft,
   normalizeSettingsConfig,
+  resetSettingsConfigDraft,
   subMindExternalApiVersion
 } from "@submind/shared-schemas";
 import { redactSensitiveObject, redactSensitiveText } from "@submind/policy";
+import {
+  normalizeProjectWorkspaceAliases,
+  reconcileStoreSnapshotsProjectIdentity
+} from "./project-identity.js";
 
 export * from "./schema.js";
+export * from "./project-identity.js";
 
 export interface SubMindStoreSnapshot {
   profiles: Profile[];
@@ -50,9 +55,45 @@ export interface MemoryCurationInput {
   content: string;
   status: MemoryItem["status"];
   isPinned: boolean;
-  curationState: Extract<MemoryItem["curationState"], "confirmed" | "edited">;
+  curationState: MemoryItem["curationState"];
   changeSummary?: string;
   actor?: ActionItem["owner"];
+  timestamp?: string;
+}
+
+export interface GeneratedProposalBatch {
+  tasks?: Task[];
+  memory: MemoryItem[];
+  guidance: GuidanceItem[];
+}
+
+export interface GuidanceReviewInput {
+  guidanceId: string;
+  nextState: Extract<GuidanceItem["state"], "suggested" | "suppressed">;
+  timestamp?: string;
+}
+
+export interface TaskReviewInput {
+  taskId: string;
+  decision: "accept" | "reject";
+  timestamp?: string;
+}
+
+export interface ContextEligibilityInput {
+  entityKind: "MemoryItem" | "GuidanceItem" | "Task";
+  entityId: string;
+  isEligible: boolean;
+  timestamp?: string;
+}
+
+export interface RevertProposalReviewInput {
+  eventId: string;
+  timestamp?: string;
+}
+
+export interface ProjectWorkspaceAliasesInput {
+  projectId: string;
+  workspaceAliases: string[];
   timestamp?: string;
 }
 
@@ -90,8 +131,11 @@ export interface ProjectExportQueryInput {
 
 export interface SubMindRepository {
   getSnapshot(): Promise<SubMindStoreSnapshot>;
+  appendEvents(events: Event[]): Promise<void>;
+  appendGeneratedProposals(batch: GeneratedProposalBatch): Promise<void>;
   getSettingsConfig(): Promise<SettingsConfigDraft>;
   updateSettingsConfig(input: SettingsConfigDraft): Promise<SettingsConfigDraft>;
+  updateProjectWorkspaceAliases(input: ProjectWorkspaceAliasesInput): Promise<Project>;
   searchProjects(input?: ProjectSearchInput): Promise<ExternalProjectSummary[]>;
   getProjectExport(input: ProjectExportQueryInput): Promise<ExternalProjectExport | null>;
   getEventHistory(input?: EventHistoryQueryInput): Promise<Event[]>;
@@ -99,6 +143,10 @@ export interface SubMindRepository {
   getActionHistory(actionId: string, limit?: number): Promise<Event[]>;
   transitionAction(input: ActionStateTransitionInput): Promise<ActionItem>;
   updateMemoryItem(input: MemoryCurationInput): Promise<MemoryItem>;
+  reviewGuidanceItem(input: GuidanceReviewInput): Promise<GuidanceItem>;
+  reviewTask(input: TaskReviewInput): Promise<Task>;
+  setContextEligibility(input: ContextEligibilityInput): Promise<void>;
+  revertProposalReview(input: RevertProposalReviewInput): Promise<Event>;
 }
 
 const sessionStatusRank: Record<Session["status"], number> = {
@@ -114,10 +162,12 @@ const threadStatusRank: Record<Thread["status"], number> = {
 };
 
 const taskStatusRank: Record<Task["status"], number> = {
+  proposed: 0,
   active: 0,
   blocked: 1,
   queued: 2,
-  completed: 3
+  completed: 3,
+  rejected: 4
 };
 
 const guidanceStateRank: Record<GuidanceItem["state"], number> = {
@@ -342,6 +392,10 @@ function mergeProjects(items: Project[]): Project[] {
       (incomingIsNewer ? project.repositoryRemote : existing.repositoryRemote) ??
       existing.repositoryRemote ??
       project.repositoryRemote;
+    const workspaceAliases = [
+      ...(existing.workspaceAliases ?? []),
+      ...(project.workspaceAliases ?? [])
+    ];
 
     const mergedProject: Project = {
       kind: "Project",
@@ -363,6 +417,10 @@ function mergeProjects(items: Project[]): Project[] {
 
     if (workspacePath) {
       mergedProject.workspacePath = workspacePath;
+    }
+
+    if (workspaceAliases.length > 0) {
+      mergedProject.workspaceAliases = [...new Set(workspaceAliases)];
     }
 
     if (repositoryRemote) {
@@ -557,7 +615,7 @@ export function queryFileChangeHistoryFromSnapshot(
 export function mergeStoreSnapshots(
   snapshots: SubMindStoreSnapshot[]
 ): SubMindStoreSnapshot {
-  const populatedSnapshots = snapshots.filter(
+  const populatedSnapshots = reconcileStoreSnapshotsProjectIdentity(snapshots).filter(
     (snapshot) =>
       snapshot.profiles.length > 0 ||
       snapshot.projects.length > 0 ||
@@ -613,18 +671,92 @@ export function createPreviewRepository(
   snapshot: SubMindStoreSnapshot = createPreviewStoreSnapshot()
 ): SubMindRepository {
   let liveSnapshot = cloneStoreSnapshot(snapshot);
-  let liveSettingsConfig = { ...defaultSettingsConfigDraft };
+  let liveSettingsConfig = resetSettingsConfigDraft();
 
   return {
     async getSnapshot() {
       return cloneStoreSnapshot(liveSnapshot);
     },
+    async appendEvents(events) {
+      const knownProjects = new Set(liveSnapshot.projects.map((project) => project.id));
+      for (const event of events) {
+        if (!knownProjects.has(event.projectId)) {
+          throw new Error(`Project "${event.projectId}" was not found for event "${event.id}".`);
+        }
+      }
+      liveSnapshot = {
+        ...liveSnapshot,
+        events: sortEvents(
+          dedupeById([
+            ...events.map((event) => redactSensitiveObject(event)),
+            ...liveSnapshot.events
+          ])
+        )
+      };
+    },
+    async appendGeneratedProposals(batch) {
+      validateGeneratedProposalBatch(liveSnapshot, batch);
+      const existingTaskIds = new Set(liveSnapshot.tasks.map((item) => item.id));
+      const existingMemoryIds = new Set(liveSnapshot.memory.map((item) => item.id));
+      const existingGuidanceIds = new Set(liveSnapshot.guidance.map((item) => item.id));
+      liveSnapshot = {
+        ...liveSnapshot,
+        tasks: sortTasks([
+          ...liveSnapshot.tasks,
+          ...(batch.tasks ?? [])
+            .filter((item) => !existingTaskIds.has(item.id))
+            .map((item) => redactSensitiveObject({ ...item, contextEligible: false }))
+        ]),
+        memory: sortMemory([
+          ...liveSnapshot.memory,
+          ...batch.memory
+            .filter((item) => !existingMemoryIds.has(item.id))
+            .map((item) => redactSensitiveObject({ ...item, contextEligible: false }))
+        ]),
+        guidance: sortGuidance([
+          ...liveSnapshot.guidance,
+          ...batch.guidance
+            .filter((item) => !existingGuidanceIds.has(item.id))
+            .map((item) => redactSensitiveObject({ ...item, contextEligible: false }))
+        ])
+      };
+    },
     async getSettingsConfig() {
-      return { ...liveSettingsConfig };
+      return normalizeSettingsConfig(liveSettingsConfig);
     },
     async updateSettingsConfig(input) {
       liveSettingsConfig = normalizeSettingsConfig(input);
-      return { ...liveSettingsConfig };
+      return normalizeSettingsConfig(liveSettingsConfig);
+    },
+    async updateProjectWorkspaceAliases(input) {
+      const projectIndex = liveSnapshot.projects.findIndex(
+        (project) => project.id === input.projectId
+      );
+      const project = liveSnapshot.projects[projectIndex];
+
+      if (!project) {
+        throw new Error(`Project "${input.projectId}" was not found.`);
+      }
+
+      const updatedProject: Project = {
+        ...project,
+        workspaceAliases: normalizeProjectWorkspaceAliases(
+          project.workspacePath,
+          input.workspaceAliases
+        ),
+        updatedAt: input.timestamp ?? new Date().toISOString()
+      };
+      const projects = [...liveSnapshot.projects];
+      projects[projectIndex] = updatedProject;
+      liveSnapshot = mergeStoreSnapshots([
+        { ...liveSnapshot, projects: sortProjects(projects) }
+      ]);
+      const reconciledProject = liveSnapshot.projects.find(
+        (item) =>
+          item.workspacePath === updatedProject.workspacePath ||
+          item.workspaceAliases?.includes(updatedProject.workspacePath ?? "")
+      );
+      return structuredClone(reconciledProject ?? updatedProject);
     },
     async searchProjects(input = {}) {
       return structuredClone(searchProjects(liveSnapshot, input));
@@ -730,18 +862,433 @@ export function createPreviewRepository(
 
       const nextMemoryItems = [...liveSnapshot.memory];
       nextMemoryItems[memoryIndex] = nextMemory;
+      const curationEvent = createMemoryCurationEvent(
+        previousMemory,
+        safeInput,
+        timestamp,
+        actor
+      );
       liveSnapshot = {
         ...liveSnapshot,
         memory: sortMemory(nextMemoryItems),
         events: sortEvents([
-          createMemoryCurationEvent(previousMemory, safeInput, timestamp, actor),
+          {
+            ...curationEvent,
+            metadata: {
+              ...curationEvent.metadata,
+              previousEntity: redactSensitiveObject(previousMemory),
+              nextEntity: redactSensitiveObject(nextMemory)
+            }
+          },
           ...liveSnapshot.events
         ])
       };
 
       return redactSensitiveObject(structuredClone(nextMemory));
+    },
+    async reviewGuidanceItem(input) {
+      const index = liveSnapshot.guidance.findIndex(
+        (item) => item.id === input.guidanceId
+      );
+      const previous = liveSnapshot.guidance[index];
+      if (!previous) {
+        throw new Error(`Guidance item "${input.guidanceId}" was not found.`);
+      }
+      if (previous.state !== "candidate") {
+        throw new Error("Only candidate guidance can be reviewed.");
+      }
+      const timestamp = input.timestamp ?? new Date().toISOString();
+      const next = { ...previous, state: input.nextState, updatedAt: timestamp };
+      const event: Event = {
+        kind: "Event",
+        id: `event-guidance-review-${previous.id}-${timestamp.replaceAll(/[^0-9]/g, "")}`,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        projectId: previous.projectId,
+        ...(previous.sessionId ? { sessionId: previous.sessionId } : {}),
+        ...(previous.threadId ? { threadId: previous.threadId } : {}),
+        guidanceItemId: previous.id,
+        originType: "user",
+        eventType: "guidance-review",
+        category: "guidance",
+        nodeCategory: "control",
+        timestamp,
+        summary: redactSensitiveText(
+          `Guidance ${previous.title} was ${input.nextState} by the operator.`
+        ).value,
+        metadata: {
+          guidanceId: previous.id,
+          previousState: previous.state,
+          nextState: input.nextState,
+          previousEntity: redactSensitiveObject(previous),
+          nextEntity: redactSensitiveObject(next)
+        }
+      };
+      const guidance = [...liveSnapshot.guidance];
+      guidance[index] = next;
+      liveSnapshot = {
+        ...liveSnapshot,
+        guidance: sortGuidance(guidance),
+        events: sortEvents([event, ...liveSnapshot.events])
+      };
+      return redactSensitiveObject(structuredClone(next));
+    },
+    async reviewTask(input) {
+      const index = liveSnapshot.tasks.findIndex((item) => item.id === input.taskId);
+      const previous = liveSnapshot.tasks[index];
+      if (!previous) {
+        throw new Error(`Task "${input.taskId}" was not found.`);
+      }
+      if (previous.source !== "model" || previous.status !== "proposed") {
+        throw new Error("Only proposed model-generated tasks can be reviewed.");
+      }
+      const timestamp = input.timestamp ?? new Date().toISOString();
+      const nextStatus: Task["status"] =
+        input.decision === "reject"
+          ? "rejected"
+          : previous.suggestedStatus ?? "queued";
+      const next = { ...previous, status: nextStatus, updatedAt: timestamp };
+      const event: Event = {
+        kind: "Event",
+        id: `event-task-review-${previous.id}-${timestamp.replaceAll(/[^0-9]/g, "")}`,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        projectId: previous.projectId,
+        sessionId: previous.sessionId,
+        threadId: previous.threadId,
+        taskId: previous.id,
+        originType: "user",
+        eventType: "task-review",
+        category: "work_change",
+        nodeCategory: "control",
+        timestamp,
+        summary: redactSensitiveText(
+          `Task ${previous.title} was ${input.decision === "accept" ? `accepted as ${nextStatus}` : "rejected"} by the operator.`
+        ).value,
+        metadata: {
+          taskId: previous.id,
+          previousStatus: previous.status,
+          suggestedStatus: previous.suggestedStatus ?? null,
+          nextStatus,
+          previousEntity: redactSensitiveObject(previous),
+          nextEntity: redactSensitiveObject(next)
+        }
+      };
+      const tasks = [...liveSnapshot.tasks];
+      tasks[index] = next;
+      liveSnapshot = {
+        ...liveSnapshot,
+        tasks: sortTasks(tasks),
+        events: sortEvents([event, ...liveSnapshot.events])
+      };
+      return redactSensitiveObject(structuredClone(next));
+    },
+    async setContextEligibility(input) {
+      const timestamp = input.timestamp ?? new Date().toISOString();
+      let previous: MemoryItem | GuidanceItem | Task;
+      let next: MemoryItem | GuidanceItem | Task;
+      let category: Event["category"];
+      let reference: Pick<Event, "memoryItemId" | "guidanceItemId" | "taskId">;
+
+      if (input.entityKind === "MemoryItem") {
+        const memory = liveSnapshot.memory.find((item) => item.id === input.entityId);
+        if (
+          !memory ||
+          input.isEligible && !["active", "stale"].includes(memory.status)
+        ) {
+          throw new Error("Only active or stale memory can be made context-eligible.");
+        }
+        if (memory.contextEligible === input.isEligible) {
+          return;
+        }
+        previous = memory;
+        next = { ...memory, contextEligible: input.isEligible, updatedAt: timestamp };
+        category = "memory";
+        reference = { memoryItemId: memory.id };
+        liveSnapshot = {
+          ...liveSnapshot,
+          memory: sortMemory(
+            liveSnapshot.memory.map((item) => item.id === memory.id ? next as MemoryItem : item)
+          )
+        };
+      } else if (input.entityKind === "GuidanceItem") {
+        const guidance = liveSnapshot.guidance.find((item) => item.id === input.entityId);
+        if (
+          !guidance ||
+          input.isEligible && ["candidate", "suppressed", "resolved"].includes(guidance.state)
+        ) {
+          throw new Error("Only reviewed guidance can be made context-eligible.");
+        }
+        if (guidance.contextEligible === input.isEligible) {
+          return;
+        }
+        previous = guidance;
+        next = { ...guidance, contextEligible: input.isEligible, updatedAt: timestamp };
+        category = "guidance";
+        reference = { guidanceItemId: guidance.id };
+        liveSnapshot = {
+          ...liveSnapshot,
+          guidance: sortGuidance(
+            liveSnapshot.guidance.map((item) => item.id === guidance.id ? next as GuidanceItem : item)
+          )
+        };
+      } else {
+        const task = liveSnapshot.tasks.find((item) => item.id === input.entityId);
+        if (
+          !task ||
+          input.isEligible && !["queued", "active", "blocked"].includes(task.status)
+        ) {
+          throw new Error("Only accepted, unresolved tasks can be made context-eligible.");
+        }
+        if (task.contextEligible === input.isEligible) {
+          return;
+        }
+        previous = task;
+        next = { ...task, contextEligible: input.isEligible, updatedAt: timestamp };
+        category = "work_change";
+        reference = { taskId: task.id };
+        liveSnapshot = {
+          ...liveSnapshot,
+          tasks: sortTasks(
+            liveSnapshot.tasks.map((item) => item.id === task.id ? next as Task : item)
+          )
+        };
+      }
+
+      liveSnapshot = {
+        ...liveSnapshot,
+        events: sortEvents([{
+          kind: "Event",
+          id: `event-context-eligibility-${input.entityId}-${timestamp.replaceAll(/[^0-9]/g, "")}-${input.isEligible ? "on" : "off"}`,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          projectId: previous.projectId ?? "project-global",
+          ...("sessionId" in previous && previous.sessionId ? { sessionId: previous.sessionId } : {}),
+          ...("threadId" in previous && previous.threadId ? { threadId: previous.threadId } : {}),
+          ...reference,
+          originType: "user",
+          eventType: "context-eligibility-changed",
+          category,
+          nodeCategory: "control",
+          timestamp,
+          summary: `Context-bundle eligibility was ${input.isEligible ? "enabled" : "disabled"} for ${input.entityKind} ${input.entityId}.`,
+          metadata: {
+            entityKind: input.entityKind,
+            entityId: input.entityId,
+            previousEligibility: previous.contextEligible === true,
+            nextEligibility: input.isEligible
+          }
+        }, ...liveSnapshot.events])
+      };
+    },
+    async revertProposalReview(input) {
+      const event = liveSnapshot.events.find((item) => item.id === input.eventId);
+      if (!event || !["memory-curated", "guidance-review", "task-review"].includes(event.eventType)) {
+        throw new Error("The selected history event cannot be reverted.");
+      }
+      const previous = event.metadata.previousEntity;
+      const next = event.metadata.nextEntity;
+      if (!previous || !next || typeof previous !== "object" || typeof next !== "object") {
+        throw new Error("The selected history event does not contain reversible state.");
+      }
+      const currentCollection =
+        event.eventType === "memory-curated"
+          ? liveSnapshot.memory
+          : event.eventType === "guidance-review"
+            ? liveSnapshot.guidance
+            : liveSnapshot.tasks;
+      const entityId = event.memoryItemId ?? event.guidanceItemId ?? event.taskId;
+      const current = currentCollection.find((item) => item.id === entityId);
+      if (
+        !current ||
+        JSON.stringify(redactSensitiveObject(current)) !== JSON.stringify(next)
+      ) {
+        throw new Error("This proposal changed after that review; revert the latest history entry instead.");
+      }
+      const timestamp = input.timestamp ?? new Date().toISOString();
+      const restored = { ...(previous as typeof current), updatedAt: timestamp };
+      if (event.memoryItemId) {
+        liveSnapshot = {
+          ...liveSnapshot,
+          memory: sortMemory(liveSnapshot.memory.map((item) => item.id === current.id ? restored as MemoryItem : item))
+        };
+      } else if (event.guidanceItemId) {
+        liveSnapshot = {
+          ...liveSnapshot,
+          guidance: sortGuidance(liveSnapshot.guidance.map((item) => item.id === current.id ? restored as GuidanceItem : item))
+        };
+      } else if (event.taskId) {
+        liveSnapshot = {
+          ...liveSnapshot,
+          tasks: sortTasks(liveSnapshot.tasks.map((item) => item.id === current.id ? restored as Task : item))
+        };
+      }
+      const revertedEvent: Event = {
+        kind: "Event",
+        id: `event-proposal-review-reverted-${event.id}-${timestamp.replaceAll(/[^0-9]/g, "")}`,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        projectId: event.projectId,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+        ...(event.threadId ? { threadId: event.threadId } : {}),
+        ...(event.taskId ? { taskId: event.taskId } : {}),
+        ...(event.guidanceItemId ? { guidanceItemId: event.guidanceItemId } : {}),
+        ...(event.memoryItemId ? { memoryItemId: event.memoryItemId } : {}),
+        originType: "user",
+        eventType: "proposal-review-reverted",
+        category: event.category,
+        nodeCategory: "control",
+        timestamp,
+        summary: `Operator reverted review history entry ${event.id}.`,
+        metadata: { sourceEventId: event.id }
+      };
+      liveSnapshot = { ...liveSnapshot, events: sortEvents([revertedEvent, ...liveSnapshot.events]) };
+      return structuredClone(revertedEvent);
     }
   };
+}
+
+export function validateGeneratedProposalBatch(
+  snapshot: SubMindStoreSnapshot,
+  batch: GeneratedProposalBatch
+): void {
+  const projectIds = new Set(snapshot.projects.map((item) => item.id));
+  const sessionsById = new Map(snapshot.sessions.map((item) => [item.id, item]));
+  const threadsById = new Map(snapshot.threads.map((item) => [item.id, item]));
+  const eventsById = new Map(snapshot.events.map((item) => [item.id, item]));
+  const filesById = new Map(snapshot.fileChanges.map((item) => [item.id, item]));
+  const actionsById = new Map(snapshot.actions.map((item) => [item.id, item]));
+  const memoryById = new Map(snapshot.memory.map((item) => [item.id, item]));
+  const batchMemoryById = new Map(batch.memory.map((item) => [item.id, item]));
+
+  function assertScope(projectId: string, sessionId?: string, threadId?: string) {
+    if (!projectIds.has(projectId)) {
+      throw new Error(`Generated proposal project "${projectId}" was not found.`);
+    }
+    const session = sessionId ? sessionsById.get(sessionId) : undefined;
+    const thread = threadId ? threadsById.get(threadId) : undefined;
+    if (
+      (sessionId && (!session || session.projectId !== projectId)) ||
+      (threadId &&
+        (!thread ||
+          thread.projectId !== projectId ||
+          (session && thread.sessionId !== session.id)))
+    ) {
+      throw new Error("Generated proposal has an invalid project, session, or thread scope.");
+    }
+  }
+
+  const newMemoryIds = new Set<string>();
+  for (const item of batch.memory) {
+    if (item.status !== "draft" || item.curationState !== "derived" || item.isPinned || item.isEdited) {
+      throw new Error("Generated memory proposals must remain unpinned, derived drafts.");
+    }
+    if (newMemoryIds.has(item.id)) {
+      throw new Error(`Generated memory proposal "${item.id}" appears more than once.`);
+    }
+    newMemoryIds.add(item.id);
+    assertScope(item.projectId ?? "", item.sessionId, item.threadId);
+    if (
+      item.sourceEventIds.length === 0 &&
+      item.sourceFileChangeIds.length === 0
+    ) {
+      throw new Error("Generated memory proposal requires evidence.");
+    }
+    for (const eventId of item.sourceEventIds) {
+      const event = eventsById.get(eventId);
+      if (
+        !event ||
+        event.projectId !== item.projectId ||
+        (item.sessionId && event.sessionId !== item.sessionId) ||
+        (item.threadId && event.threadId !== item.threadId)
+      ) {
+        throw new Error(`Generated memory proposal references invalid event "${eventId}".`);
+      }
+    }
+    for (const fileId of item.sourceFileChangeIds) {
+      const file = filesById.get(fileId);
+      if (
+        !file ||
+        file.projectId !== item.projectId ||
+        (item.sessionId && file.sessionId !== item.sessionId) ||
+        (item.threadId && file.threadId !== item.threadId)
+      ) {
+        throw new Error(`Generated memory proposal references invalid file change "${fileId}".`);
+      }
+    }
+  }
+
+  const newTaskIds = new Set<string>();
+  for (const item of batch.tasks ?? []) {
+    if (
+      item.source !== "model" ||
+      item.status !== "proposed" ||
+      !["queued", "active", "blocked", "completed"].includes(
+        String(item.suggestedStatus)
+      ) ||
+      !item.sourceEventIds?.length
+    ) {
+      throw new Error("Generated tasks must be proposed model tasks with event evidence.");
+    }
+    if (newTaskIds.has(item.id)) {
+      throw new Error(`Generated task proposal "${item.id}" appears more than once.`);
+    }
+    newTaskIds.add(item.id);
+    assertScope(item.projectId, item.sessionId, item.threadId);
+    const thread = threadsById.get(item.threadId);
+    if (!thread || thread.sessionId !== item.sessionId) {
+      throw new Error("Generated task proposal must belong to a thread and its session.");
+    }
+    for (const eventId of item.sourceEventIds) {
+      const event = eventsById.get(eventId);
+      if (
+        !event ||
+        event.projectId !== item.projectId ||
+        event.sessionId !== item.sessionId ||
+        event.threadId !== item.threadId
+      ) {
+        throw new Error(`Generated task proposal references invalid event "${eventId}".`);
+      }
+    }
+  }
+
+  const newGuidanceIds = new Set<string>();
+  for (const item of batch.guidance) {
+    if (item.state !== "candidate" || item.source !== "model") {
+      throw new Error("Generated guidance proposals must remain model candidates.");
+    }
+    if (newGuidanceIds.has(item.id)) {
+      throw new Error(`Generated guidance proposal "${item.id}" appears more than once.`);
+    }
+    newGuidanceIds.add(item.id);
+    assertScope(item.projectId, item.sessionId, item.threadId);
+    if (item.linkedEventIds.length === 0) {
+      throw new Error("Generated guidance proposal requires event evidence.");
+    }
+    for (const eventId of item.linkedEventIds) {
+      const event = eventsById.get(eventId);
+      if (
+        !event ||
+        event.projectId !== item.projectId ||
+        (item.sessionId && event.sessionId !== item.sessionId) ||
+        (item.threadId && event.threadId !== item.threadId)
+      ) {
+        throw new Error(`Generated guidance proposal references invalid event "${eventId}".`);
+      }
+    }
+    for (const memoryId of item.linkedMemoryItemIds) {
+      const memory = memoryById.get(memoryId) ?? batchMemoryById.get(memoryId);
+      if (!memory || (memory.projectId && memory.projectId !== item.projectId)) {
+        throw new Error(`Generated guidance proposal references invalid memory "${memoryId}".`);
+      }
+    }
+    for (const actionId of item.linkedActionItemIds) {
+      const action = actionsById.get(actionId);
+      if (!action || action.projectId !== item.projectId) {
+        throw new Error(`Generated guidance proposal references invalid action "${actionId}".`);
+      }
+    }
+  }
 }
 
 export function createEmptyStoreSnapshot(): SubMindStoreSnapshot {
@@ -778,6 +1325,7 @@ function createProjectSearchHaystack(project: Project): string {
       project.description,
       project.summary,
       project.workspacePath,
+      ...(project.workspaceAliases ?? []),
       project.repositoryRemote,
       ...project.descriptors
     ]
@@ -1643,6 +2191,13 @@ export function createPreviewStoreSnapshot(): SubMindStoreSnapshot {
     actions
   };
 }
+
+export {
+  createSqliteCheckpointTriggerQueue,
+  type CheckpointTriggerQueueStore,
+  type PersistedCheckpointTrigger,
+  type PersistedCheckpointTriggerScope
+} from "./checkpoint-trigger-queue.js";
 
 export {
   createSqliteRepository,

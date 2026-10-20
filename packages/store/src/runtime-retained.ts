@@ -10,11 +10,48 @@ import type {
   Thread
 } from "@submind/shared-schemas";
 import { redactSensitiveObject } from "@submind/policy";
+import { getEventHarness } from "@submind/shared-schemas";
 import type { SubMindStoreSnapshot } from "./index.js";
 
 export interface DerivedRetainedState {
   memory: MemoryItem[];
   guidance: GuidanceItem[];
+}
+
+/** Correlation only: observed later work does not prove consumption or benefit. */
+export function deriveContextOutcomeEvidence(snapshot: SubMindStoreSnapshot): Event[] {
+  return snapshot.events.flatMap(delivery => {
+    if (delivery.eventType !== "context_bundle_supplied" || !delivery.threadId) return [];
+    const subsequent = snapshot.events.filter(event =>
+      event.projectId === delivery.projectId && event.threadId === delivery.threadId &&
+      event.timestamp > delivery.timestamp && Boolean(getEventHarness(event))
+    ).sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id)).slice(-20);
+    if (!subsequent.length) return [];
+    const timestamp = subsequent[subsequent.length - 1]!.timestamp;
+    return [{
+      kind: "Event" as const,
+      id: `event-context-outcome-${delivery.id}`,
+      projectId: delivery.projectId,
+      ...(delivery.sessionId ? { sessionId: delivery.sessionId } : {}),
+      threadId: delivery.threadId,
+      originType: "submind" as const,
+      eventType: "context_outcome_observed",
+      category: "guidance" as const,
+      nodeCategory: "cognitive" as const,
+      timestamp,
+      summary: "Later work was observed in the context request's thread; consumption and usefulness remain unverified.",
+      metadata: {
+        bundleId: delivery.metadata.bundleId,
+        deliveryEventId: delivery.id,
+        evidenceEventIds: subsequent.map(event => event.id),
+        assessment: "temporal_correlation_only",
+        consumption: "unverified",
+        usefulness: "unverified"
+      },
+      createdAt: subsequent[0]!.timestamp,
+      updatedAt: timestamp
+    }];
+  });
 }
 
 function compareDescending(left: string, right: string): number {
@@ -111,7 +148,12 @@ function getThreadFileChanges(
 
 function getThreadTasks(snapshot: SubMindStoreSnapshot, threadId: string): Task[] {
   return snapshot.tasks
-    .filter((task) => task.threadId === threadId)
+    .filter(
+      (task) =>
+        task.threadId === threadId &&
+        task.status !== "proposed" &&
+        task.status !== "rejected"
+    )
     .sort((left, right) => compareDescending(left.updatedAt, right.updatedAt));
 }
 
@@ -232,14 +274,17 @@ function buildProjectContextMemory(
     updatedAt: nowTimestamp
   };
 
-  if (existing?.isEdited) {
+  if (existing && (existing.isEdited || existing.curationState === "confirmed")) {
     return {
       ...derived,
       summary: existing.summary,
       content: existing.content,
       status: existing.status,
       isPinned: existing.isPinned,
-      isEdited: true
+      isEdited: existing.isEdited,
+      confidence: existing.confidence,
+      sourceEventIds: existing.sourceEventIds,
+      sourceFileChangeIds: existing.sourceFileChangeIds
     };
   }
 
@@ -324,14 +369,17 @@ function buildThreadMemory(
     updatedAt: nowTimestamp
   };
 
-  if (existing?.isEdited) {
+  if (existing && (existing.isEdited || existing.curationState === "confirmed")) {
     return {
       ...derived,
       summary: existing.summary,
       content: existing.content,
       status: existing.status,
       isPinned: existing.isPinned,
-      isEdited: true
+      isEdited: existing.isEdited,
+      confidence: existing.confidence,
+      sourceEventIds: existing.sourceEventIds,
+      sourceFileChangeIds: existing.sourceFileChangeIds
     };
   }
 
@@ -400,14 +448,17 @@ function buildTaskMemory(
     updatedAt: nowTimestamp
   };
 
-  if (existing?.isEdited) {
+  if (existing && (existing.isEdited || existing.curationState === "confirmed")) {
     return {
       ...derived,
       summary: existing.summary,
       content: existing.content,
       status: existing.status,
       isPinned: existing.isPinned,
-      isEdited: true
+      isEdited: existing.isEdited,
+      confidence: existing.confidence,
+      sourceEventIds: existing.sourceEventIds,
+      sourceFileChangeIds: existing.sourceFileChangeIds
     };
   }
 
@@ -458,16 +509,16 @@ function buildThreadGuidance(
 
   if (highRiskActions.length > 0) {
     const leadAction = highRiskActions[0]!;
-    state = "injected";
+    state = "suggested";
     source = "policy";
     title = leadAction.title;
     summary =
       leadAction.summary ??
       leadAction.riskSummary;
     rationale =
-      `High-risk action pressure is already present in this thread, so guidance is promoted into the injected state to keep operator attention attached to the real control loop.`;
+      `High-risk action pressure is already present in this thread, so guidance is suggested for operator attention; delivery has not been observed.`;
     policySummary =
-      "High-risk or critical action pressure escalates thread guidance into injected posture.";
+      "High-risk or critical action pressure raises suggested guidance priority without claiming delivery.";
   } else if (primaryTask?.status === "blocked") {
     state = "suggested";
     source = "system";
@@ -570,7 +621,7 @@ export function deriveRetainedState(
   snapshot: SubMindStoreSnapshot,
   nowTimestamp: string = new Date().toISOString()
 ): DerivedRetainedState {
-  const sourceSnapshot = redactSensitiveObject(snapshot);
+  const sourceSnapshot = redactSensitiveObject({ ...snapshot, events: snapshot.events.filter(event => !["context_bundle_supplied", "context_outcome_observed"].includes(event.eventType)) });
   const existingMemoryById = new Map(sourceSnapshot.memory.map((item) => [item.id, item]));
   const existingGuidanceById = new Map(
     sourceSnapshot.guidance.map((item) => [item.id, item])

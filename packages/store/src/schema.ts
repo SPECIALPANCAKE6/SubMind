@@ -23,6 +23,7 @@ export const projectsTable = sqliteTable("projects", {
   description: text("description"),
   summary: text("summary"),
   workspacePath: text("workspace_path"),
+  workspaceAliasesJson: text("workspace_aliases_json").notNull().default("[]"),
   repositoryRemote: text("repository_remote"),
   descriptorsJson: text("descriptors_json").notNull()
 });
@@ -59,8 +60,12 @@ export const tasksTable = sqliteTable("tasks", {
   projectId: text("project_id").notNull(),
   title: text("title").notNull(),
   status: text("status").notNull(),
+  suggestedStatus: text("suggested_status"),
   priority: text("priority").notNull(),
-  summary: text("summary")
+  summary: text("summary"),
+  source: text("source"),
+  sourceEventIdsJson: text("source_event_ids_json").notNull().default("[]"),
+  contextEligible: text("context_eligible").notNull().default("0")
 });
 
 export const eventsTable = sqliteTable("events", {
@@ -123,7 +128,8 @@ export const memoryItemsTable = sqliteTable("memory_items", {
   linkedGuidanceItemIdsJson: text("linked_guidance_item_ids_json").notNull(),
   changeSummary: text("change_summary"),
   isPinned: text("is_pinned").notNull(),
-  isEdited: text("is_edited").notNull()
+  isEdited: text("is_edited").notNull(),
+  contextEligible: text("context_eligible").notNull().default("0")
 });
 
 export const guidanceItemsTable = sqliteTable("guidance_items", {
@@ -143,7 +149,8 @@ export const guidanceItemsTable = sqliteTable("guidance_items", {
   policySummary: text("policy_summary").notNull(),
   linkedMemoryItemIdsJson: text("linked_memory_item_ids_json").notNull(),
   linkedEventIdsJson: text("linked_event_ids_json").notNull(),
-  linkedActionItemIdsJson: text("linked_action_item_ids_json").notNull()
+  linkedActionItemIdsJson: text("linked_action_item_ids_json").notNull(),
+  contextEligible: text("context_eligible").notNull().default("0")
 });
 
 export const actionItemsTable = sqliteTable("action_items", {

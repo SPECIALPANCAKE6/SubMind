@@ -15,22 +15,40 @@ import type {
   Thread
 } from "@submind/shared-schemas";
 import {
-  defaultSettingsConfigDraft,
   normalizeSettingsConfig,
+  resetSettingsConfigDraft,
+  settingsConfigStorageKey,
   subMindExternalApiVersion
 } from "@submind/shared-schemas";
+import { validateObservedAgentWork } from "@submind/shared-schemas";
 import { redactSensitiveObject, redactSensitiveText } from "@submind/policy";
 import type {
   ActionStateTransitionInput,
   EventHistoryQueryInput,
   FileChangeHistoryQueryInput,
+  GuidanceReviewInput,
+  GeneratedProposalBatch,
   MemoryCurationInput,
   ProjectExportQueryInput,
   ProjectSearchInput,
+  ProjectWorkspaceAliasesInput,
   SubMindRepository,
-  SubMindStoreSnapshot
+  SubMindStoreSnapshot,
+  ContextEligibilityInput,
+  RevertProposalReviewInput,
+  TaskReviewInput
 } from "./index.js";
-import { deriveRetainedState } from "./runtime-retained.js";
+import {
+  mergeStoreSnapshots,
+  validateGeneratedProposalBatch
+} from "./index.js";
+import { deriveRetainedState, deriveContextOutcomeEvidence } from "./runtime-retained.js";
+import {
+  createProjectIdAliases,
+  normalizeProjectWorkspaceAliases,
+  reconcileSettingsProjectIdentity,
+  reconcileStoreSnapshotsProjectIdentity
+} from "./project-identity.js";
 
 export interface SubMindSqlQueryResult {
   rowsAffected: number;
@@ -53,8 +71,12 @@ export interface CreateSqliteRepositoryOptions {
 
 export const subMindSqliteDatabasePath = "sqlite:submind.db";
 const runtimeSourceKey = "runtime_source";
-const runtimeSourceValue = "codex_local_v1";
-const settingsConfigKey = "settings_config";
+const runtimeSourceValue = "runtime_source";
+const legacyRuntimeSourceValues = new Set(["codex_local_v1"]);
+
+function isManagedRuntimeSource(value: string | null): boolean {
+  return value === runtimeSourceValue || legacyRuntimeSourceValues.has(value ?? "");
+}
 
 const createTableStatements = [
   `CREATE TABLE IF NOT EXISTS app_state (
@@ -78,6 +100,7 @@ const createTableStatements = [
     description TEXT,
     summary TEXT,
     workspace_path TEXT,
+    workspace_aliases_json TEXT NOT NULL DEFAULT '[]',
     repository_remote TEXT,
     descriptors_json TEXT NOT NULL
   )`,
@@ -111,8 +134,12 @@ const createTableStatements = [
     project_id TEXT NOT NULL,
     title TEXT NOT NULL,
     status TEXT NOT NULL,
+    suggested_status TEXT,
     priority TEXT NOT NULL,
-    summary TEXT
+    summary TEXT,
+    source TEXT,
+    source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+    context_eligible TEXT NOT NULL DEFAULT '0'
   )`,
   `CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY NOT NULL,
@@ -172,7 +199,8 @@ const createTableStatements = [
     linked_guidance_item_ids_json TEXT NOT NULL DEFAULT '[]',
     change_summary TEXT,
     is_pinned TEXT NOT NULL,
-    is_edited TEXT NOT NULL
+    is_edited TEXT NOT NULL,
+    context_eligible TEXT NOT NULL DEFAULT '0'
   )`,
   `CREATE TABLE IF NOT EXISTS guidance_items (
     id TEXT PRIMARY KEY NOT NULL,
@@ -191,7 +219,8 @@ const createTableStatements = [
     policy_summary TEXT NOT NULL DEFAULT '',
     linked_memory_item_ids_json TEXT NOT NULL,
     linked_event_ids_json TEXT NOT NULL DEFAULT '[]',
-    linked_action_item_ids_json TEXT NOT NULL DEFAULT '[]'
+    linked_action_item_ids_json TEXT NOT NULL DEFAULT '[]',
+    context_eligible TEXT NOT NULL DEFAULT '0'
   )`,
   `CREATE TABLE IF NOT EXISTS action_items (
     id TEXT PRIMARY KEY NOT NULL,
@@ -225,21 +254,6 @@ const clearAllDataStatements = [
   "DELETE FROM profiles"
 ] as const;
 
-const clearCoreDataStatements = [
-  "DELETE FROM file_changes",
-  "DELETE FROM events",
-  "DELETE FROM tasks",
-  "DELETE FROM threads",
-  "DELETE FROM sessions",
-  "DELETE FROM projects",
-  "DELETE FROM profiles"
-] as const;
-
-const clearDerivedRetainedDataStatements = [
-  "DELETE FROM guidance_items",
-  "DELETE FROM memory_items"
-] as const;
-
 interface ProfileRow {
   id: string;
   createdAt: string;
@@ -258,6 +272,7 @@ interface ProjectRow {
   description: string | null;
   summary: string | null;
   workspacePath: string | null;
+  workspaceAliasesJson: string;
   repositoryRemote: string | null;
   descriptorsJson: string;
 }
@@ -294,8 +309,12 @@ interface TaskRow {
   projectId: string;
   title: string;
   status: Task["status"];
+  suggestedStatus: Task["suggestedStatus"] | null;
   priority: Task["priority"];
   summary: string | null;
+  source: Task["source"] | null;
+  sourceEventIdsJson: string;
+  contextEligible: string | number | boolean;
 }
 
 interface EventRow {
@@ -359,6 +378,7 @@ interface MemoryItemRow {
   changeSummary: string | null;
   isPinned: string | number | boolean;
   isEdited: string | number | boolean;
+  contextEligible: string | number | boolean;
 }
 
 interface GuidanceItemRow {
@@ -379,6 +399,7 @@ interface GuidanceItemRow {
   linkedMemoryItemIdsJson: string;
   linkedEventIdsJson: string;
   linkedActionItemIdsJson: string;
+  contextEligible: string | number | boolean;
 }
 
 interface ActionItemRow {
@@ -460,6 +481,9 @@ function mapProjectRow(row: ProjectRow): Project {
     ...(row.description ? { description: row.description } : {}),
     ...(row.summary ? { summary: row.summary } : {}),
     ...(row.workspacePath ? { workspacePath: row.workspacePath } : {}),
+    ...(parseStringArrayJson(row.workspaceAliasesJson).length > 0
+      ? { workspaceAliases: parseStringArrayJson(row.workspaceAliasesJson) }
+      : {}),
     ...(row.repositoryRemote ? { repositoryRemote: row.repositoryRemote } : {}),
     descriptors: parseStringArrayJson(row.descriptorsJson)
   };
@@ -505,8 +529,12 @@ function mapTaskRow(row: TaskRow): Task {
     projectId: row.projectId,
     title: row.title,
     status: row.status,
+    ...(row.suggestedStatus ? { suggestedStatus: row.suggestedStatus } : {}),
     priority: row.priority,
-    ...(row.summary ? { summary: row.summary } : {})
+    ...(row.summary ? { summary: row.summary } : {}),
+    ...(row.source ? { source: row.source } : {}),
+    sourceEventIds: parseStringArrayJson(row.sourceEventIdsJson),
+    contextEligible: parseBooleanValue(row.contextEligible)
   };
 }
 
@@ -578,7 +606,8 @@ function mapMemoryItemRow(row: MemoryItemRow): MemoryItem {
     linkedGuidanceItemIds: parseStringArrayJson(row.linkedGuidanceItemIdsJson),
     ...(row.changeSummary ? { changeSummary: row.changeSummary } : {}),
     isPinned: parseBooleanValue(row.isPinned),
-    isEdited: parseBooleanValue(row.isEdited)
+    isEdited: parseBooleanValue(row.isEdited),
+    contextEligible: parseBooleanValue(row.contextEligible)
   };
 }
 
@@ -601,7 +630,8 @@ function mapGuidanceItemRow(row: GuidanceItemRow): GuidanceItem {
     policySummary: row.policySummary,
     linkedMemoryItemIds: parseStringArrayJson(row.linkedMemoryItemIdsJson),
     linkedEventIds: parseStringArrayJson(row.linkedEventIdsJson),
-    linkedActionItemIds: parseStringArrayJson(row.linkedActionItemIdsJson)
+    linkedActionItemIds: parseStringArrayJson(row.linkedActionItemIdsJson),
+    contextEligible: parseBooleanValue(row.contextEligible)
   };
 }
 
@@ -624,6 +654,35 @@ function mapActionItemRow(row: ActionItemRow): ActionItem {
     ...(row.actualOutcome ? { actualOutcome: row.actualOutcome } : {}),
     owner: row.owner
   };
+}
+
+async function insertEvent(db: SubMindSqlDatabase, event: Event): Promise<void> {
+  const safe = redactSensitiveObject(event);
+  await db.execute(
+    `INSERT INTO events
+     (id, created_at, updated_at, project_id, session_id, thread_id, task_id, file_change_id, guidance_item_id, action_item_id, memory_item_id, origin_type, event_type, category, node_category, timestamp, summary, metadata_json)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+    [
+      safe.id,
+      safe.createdAt,
+      safe.updatedAt,
+      safe.projectId,
+      safe.sessionId ?? null,
+      safe.threadId ?? null,
+      safe.taskId ?? null,
+      safe.fileChangeId ?? null,
+      safe.guidanceItemId ?? null,
+      safe.actionItemId ?? null,
+      safe.memoryItemId ?? null,
+      safe.originType,
+      safe.eventType,
+      safe.category,
+      safe.nodeCategory,
+      safe.timestamp,
+      safe.summary,
+      JSON.stringify(safe.metadata)
+    ]
+  );
 }
 
 function stringifyBoolean(value: boolean): string {
@@ -831,6 +890,31 @@ function buildFileChangeHistoryQuery(input: FileChangeHistoryQueryInput = {}): {
 
 const ensuredColumns = [
   {
+    tableName: "tasks",
+    columnName: "suggested_status",
+    columnDefinition: "TEXT"
+  },
+  {
+    tableName: "tasks",
+    columnName: "source",
+    columnDefinition: "TEXT"
+  },
+  {
+    tableName: "tasks",
+    columnName: "source_event_ids_json",
+    columnDefinition: "TEXT NOT NULL DEFAULT '[]'"
+  },
+  {
+    tableName: "tasks",
+    columnName: "context_eligible",
+    columnDefinition: "TEXT NOT NULL DEFAULT '0'"
+  },
+  {
+    tableName: "projects",
+    columnName: "workspace_aliases_json",
+    columnDefinition: "TEXT NOT NULL DEFAULT '[]'"
+  },
+  {
     tableName: "memory_items",
     columnName: "curation_state",
     columnDefinition: "TEXT NOT NULL DEFAULT 'derived'"
@@ -861,6 +945,11 @@ const ensuredColumns = [
     columnDefinition: "TEXT"
   },
   {
+    tableName: "memory_items",
+    columnName: "context_eligible",
+    columnDefinition: "TEXT NOT NULL DEFAULT '0'"
+  },
+  {
     tableName: "guidance_items",
     columnName: "confidence",
     columnDefinition: "REAL NOT NULL DEFAULT 0.5"
@@ -884,6 +973,11 @@ const ensuredColumns = [
     tableName: "guidance_items",
     columnName: "linked_action_item_ids_json",
     columnDefinition: "TEXT NOT NULL DEFAULT '[]'"
+  },
+  {
+    tableName: "guidance_items",
+    columnName: "context_eligible",
+    columnDefinition: "TEXT NOT NULL DEFAULT '0'"
   }
 ] as const;
 
@@ -892,18 +986,19 @@ async function ensureColumnExists(
   tableName: string,
   columnName: string,
   columnDefinition: string
-): Promise<void> {
+): Promise<boolean> {
   const rows = await db.select<Array<{ name: string }>>(
     `PRAGMA table_info(${tableName})`
   );
 
   if (rows.some((row) => row.name === columnName)) {
-    return;
+    return false;
   }
 
   await db.execute(
     `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`
   );
+  return true;
 }
 
 async function ensureSchema(db: SubMindSqlDatabase): Promise<void> {
@@ -911,12 +1006,27 @@ async function ensureSchema(db: SubMindSqlDatabase): Promise<void> {
     await db.execute(statement);
   }
 
+  const addedColumns = new Set<string>();
   for (const ensuredColumn of ensuredColumns) {
-    await ensureColumnExists(
+    const added = await ensureColumnExists(
       db,
       ensuredColumn.tableName,
       ensuredColumn.columnName,
       ensuredColumn.columnDefinition
+    );
+    if (added) {
+      addedColumns.add(`${ensuredColumn.tableName}.${ensuredColumn.columnName}`);
+    }
+  }
+
+  if (addedColumns.has("memory_items.context_eligible")) {
+    await db.execute(
+      "UPDATE memory_items SET context_eligible = '1' WHERE status NOT IN ('archived', 'superseded', 'draft')"
+    );
+  }
+  if (addedColumns.has("guidance_items.context_eligible")) {
+    await db.execute(
+      "UPDATE guidance_items SET context_eligible = '1' WHERE state IN ('injected', 'suggested')"
     );
   }
 }
@@ -965,8 +1075,8 @@ async function seedCoreSnapshotIntoDatabase(
   for (const project of snapshot.projects) {
     await db.execute(
       `INSERT INTO projects
-       (id, created_at, updated_at, profile_id, name, description, summary, workspace_path, repository_remote, descriptors_json)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       (id, created_at, updated_at, profile_id, name, description, summary, workspace_path, workspace_aliases_json, repository_remote, descriptors_json)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT(id) DO UPDATE SET
          updated_at = excluded.updated_at,
          profile_id = excluded.profile_id,
@@ -974,6 +1084,7 @@ async function seedCoreSnapshotIntoDatabase(
          description = excluded.description,
          summary = excluded.summary,
          workspace_path = excluded.workspace_path,
+         workspace_aliases_json = excluded.workspace_aliases_json,
          repository_remote = excluded.repository_remote,
          descriptors_json = excluded.descriptors_json`,
       [
@@ -985,6 +1096,7 @@ async function seedCoreSnapshotIntoDatabase(
         project.description ?? null,
         project.summary ?? null,
         project.workspacePath ?? null,
+        JSON.stringify(project.workspaceAliases ?? []),
         project.repositoryRemote ?? null,
         JSON.stringify(project.descriptors)
       ]
@@ -1046,8 +1158,8 @@ async function seedCoreSnapshotIntoDatabase(
   for (const task of snapshot.tasks) {
     await db.execute(
       `INSERT INTO tasks
-       (id, created_at, updated_at, session_id, thread_id, project_id, title, status, priority, summary)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       (id, created_at, updated_at, session_id, thread_id, project_id, title, status, suggested_status, priority, summary, source, source_event_ids_json, context_eligible)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        ON CONFLICT(id) DO UPDATE SET
          updated_at = excluded.updated_at,
          session_id = excluded.session_id,
@@ -1055,8 +1167,12 @@ async function seedCoreSnapshotIntoDatabase(
          project_id = excluded.project_id,
          title = excluded.title,
          status = excluded.status,
+         suggested_status = COALESCE(tasks.suggested_status, excluded.suggested_status),
          priority = excluded.priority,
-         summary = excluded.summary`,
+         summary = excluded.summary,
+         source = COALESCE(tasks.source, excluded.source),
+         source_event_ids_json = CASE WHEN tasks.source_event_ids_json = '[]'
+           THEN excluded.source_event_ids_json ELSE tasks.source_event_ids_json END`,
       [
         task.id,
         task.createdAt,
@@ -1066,8 +1182,12 @@ async function seedCoreSnapshotIntoDatabase(
         task.projectId,
         task.title,
         task.status,
+        task.suggestedStatus ?? null,
         task.priority,
-        task.summary ?? null
+        task.summary ?? null,
+        task.source ?? null,
+        JSON.stringify(task.sourceEventIds ?? []),
+        stringifyBoolean(task.contextEligible ?? false)
       ]
     );
   }
@@ -1166,8 +1286,8 @@ async function seedRetainedSnapshotIntoDatabase(
   for (const memoryItem of snapshot.memory) {
     await db.execute(
       `INSERT INTO memory_items
-       (id, created_at, updated_at, project_id, session_id, thread_id, bucket, status, summary, content, confidence, freshness, curation_state, source_event_ids_json, source_file_change_ids_json, linked_action_item_ids_json, linked_guidance_item_ids_json, change_summary, is_pinned, is_edited)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+       (id, created_at, updated_at, project_id, session_id, thread_id, bucket, status, summary, content, confidence, freshness, curation_state, source_event_ids_json, source_file_change_ids_json, linked_action_item_ids_json, linked_guidance_item_ids_json, change_summary, is_pinned, is_edited, context_eligible)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
        ON CONFLICT(id) DO UPDATE SET
          updated_at = excluded.updated_at,
          project_id = excluded.project_id,
@@ -1207,7 +1327,11 @@ async function seedRetainedSnapshotIntoDatabase(
         JSON.stringify(memoryItem.linkedGuidanceItemIds),
         memoryItem.changeSummary ?? null,
         stringifyBoolean(memoryItem.isPinned),
-        stringifyBoolean(memoryItem.isEdited)
+        stringifyBoolean(memoryItem.isEdited),
+        stringifyBoolean(
+          memoryItem.contextEligible ??
+            !["archived", "superseded", "draft"].includes(memoryItem.status)
+        )
       ]
     );
   }
@@ -1215,8 +1339,8 @@ async function seedRetainedSnapshotIntoDatabase(
   for (const guidanceItem of snapshot.guidance) {
     await db.execute(
       `INSERT INTO guidance_items
-       (id, created_at, updated_at, project_id, session_id, thread_id, title, summary, rationale, state, source, confidence, evidence_summary, policy_summary, linked_memory_item_ids_json, linked_event_ids_json, linked_action_item_ids_json)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+       (id, created_at, updated_at, project_id, session_id, thread_id, title, summary, rationale, state, source, confidence, evidence_summary, policy_summary, linked_memory_item_ids_json, linked_event_ids_json, linked_action_item_ids_json, context_eligible)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        ON CONFLICT(id) DO UPDATE SET
          updated_at = excluded.updated_at,
          project_id = excluded.project_id,
@@ -1251,7 +1375,11 @@ async function seedRetainedSnapshotIntoDatabase(
         JSON.stringify(guidanceItem.linkedMemoryItemIds)
         ,
         JSON.stringify(guidanceItem.linkedEventIds),
-        JSON.stringify(guidanceItem.linkedActionItemIds)
+        JSON.stringify(guidanceItem.linkedActionItemIds),
+        stringifyBoolean(
+          guidanceItem.contextEligible ??
+            ["injected", "suggested"].includes(guidanceItem.state)
+        )
       ]
     );
   }
@@ -1333,10 +1461,10 @@ async function setAppStateValue(
 async function readSettingsConfig(
   db: SubMindSqlDatabase
 ): Promise<SettingsConfigDraft> {
-  const rawConfig = await getAppStateValue(db, settingsConfigKey);
+  const rawConfig = await getAppStateValue(db, settingsConfigStorageKey);
 
   if (!rawConfig) {
-    return { ...defaultSettingsConfigDraft };
+    return resetSettingsConfigDraft();
   }
 
   try {
@@ -1348,7 +1476,7 @@ async function readSettingsConfig(
         : null
     );
   } catch {
-    return { ...defaultSettingsConfigDraft };
+    return resetSettingsConfigDraft();
   }
 }
 
@@ -1360,7 +1488,7 @@ async function writeSettingsConfig(
 
   await setAppStateValue(
     db,
-    settingsConfigKey,
+    settingsConfigStorageKey,
     JSON.stringify(settingsConfig)
   );
 
@@ -1385,8 +1513,8 @@ function createRuntimeRetainedSnapshot(
 
   return {
     ...snapshot,
-    memory: derivedRetainedState.memory,
-    guidance: derivedRetainedState.guidance,
+    memory: [...new Map([...snapshot.memory, ...derivedRetainedState.memory].map(item => [item.id, item])).values()],
+    guidance: [...new Map([...snapshot.guidance, ...derivedRetainedState.guidance, ...snapshot.guidance.filter(item => item.source === "operator")].map(item => [item.id, item])).values()],
     actions: retainedActions
   };
 }
@@ -1397,40 +1525,57 @@ export async function syncRuntimeSnapshotIntoDatabase(
 ): Promise<void> {
   await ensureSchema(db);
 
-  const currentRuntimeSource = await getAppStateValue(db, runtimeSourceKey);
-  const existingSnapshot =
-    currentRuntimeSource === runtimeSourceValue
-      ? await readSnapshot(db)
-      : {
-          profiles: [],
-          projects: [],
-          sessions: [],
-          threads: [],
-          tasks: [],
-          events: [],
-          fileChanges: [],
-          memory: [],
-          guidance: [],
-          actions: []
-        };
-
-  if (currentRuntimeSource !== runtimeSourceValue) {
-    await executeStatements(db, clearAllDataStatements);
-  } else {
-    await executeStatements(db, clearCoreDataStatements);
-  }
-
-  await seedCoreSnapshotIntoDatabase(db, snapshot);
-
-  if (currentRuntimeSource === runtimeSourceValue) {
-    await executeStatements(db, clearDerivedRetainedDataStatements);
-  }
-
-  await seedRetainedSnapshotIntoDatabase(
-    db,
-    redactSensitiveObject(createRuntimeRetainedSnapshot(snapshot, existingSnapshot))
+  // A missing/legacy runtime marker is not permission to erase retained work.
+  const existingSnapshot = await readSnapshot(db);
+  const projectIdAliases = createProjectIdAliases([
+    ...snapshot.projects,
+    ...existingSnapshot.projects
+  ]);
+  const [reconciledSnapshot, reconciledExistingSnapshot] =
+    reconcileStoreSnapshotsProjectIdentity([snapshot, existingSnapshot]);
+  const persistedAliasesByProjectId = new Map(
+    reconciledExistingSnapshot.projects.map((project) => [
+      project.id,
+      [project.workspacePath, ...(project.workspaceAliases ?? [])].filter(
+        (value): value is string => Boolean(value)
+      )
+    ])
+  );
+  const reconciledSnapshotWithAliases: SubMindStoreSnapshot = {
+    ...reconciledSnapshot,
+    projects: reconciledSnapshot.projects.map((project) => ({
+      ...project,
+      workspaceAliases: normalizeProjectWorkspaceAliases(project.workspacePath, [
+        ...(project.workspaceAliases ?? []),
+        ...(persistedAliasesByProjectId.get(project.id) ?? [])
+      ])
+    }))
+  };
+  const reconciledSettings = reconcileSettingsProjectIdentity(
+    await readSettingsConfig(db),
+    projectIdAliases
   );
 
+  // Recent feeds are partial observations, not authoritative replacements.
+  const mergedSnapshot = mergeStoreSnapshots([reconciledExistingSnapshot, reconciledSnapshotWithAliases]);
+  // Validate against retained parents so partial observations remain supported.
+  // This also protects writes made by callers other than a protocol adapter.
+  validateObservedAgentWork(mergedSnapshot);
+  mergedSnapshot.events = [...new Map([...mergedSnapshot.events, ...deriveContextOutcomeEvidence(mergedSnapshot)].map(event => [event.id, event])).values()];
+  const retainedSnapshot = createRuntimeRetainedSnapshot(mergedSnapshot, reconciledExistingSnapshot);
+  await seedCoreSnapshotIntoDatabase(db, redactSensitiveObject(mergedSnapshot));
+  await seedRetainedSnapshotIntoDatabase(db, redactSensitiveObject(retainedSnapshot));
+
+  // Remove only superseded identity aliases after their replacement rows exist.
+  for (const [oldId, newId] of projectIdAliases) {
+    if (oldId !== newId) await db.execute("DELETE FROM projects WHERE id = $1", [oldId]);
+  }
+  for (const oldMemory of existingSnapshot.memory) {
+    if (!retainedSnapshot.memory.some(item => item.id === oldMemory.id)) {
+      await db.execute("DELETE FROM memory_items WHERE id = $1", [oldMemory.id]);
+    }
+  }
+  await writeSettingsConfig(db, reconciledSettings);
   await setAppStateValue(db, runtimeSourceKey, runtimeSourceValue);
 }
 
@@ -1468,6 +1613,7 @@ async function readSnapshot(db: SubMindSqlDatabase): Promise<SubMindStoreSnapsho
          description,
          summary,
          workspace_path AS workspacePath,
+         workspace_aliases_json AS workspaceAliasesJson,
          repository_remote AS repositoryRemote,
          descriptors_json AS descriptorsJson
        FROM projects
@@ -1510,8 +1656,12 @@ async function readSnapshot(db: SubMindSqlDatabase): Promise<SubMindStoreSnapsho
          project_id AS projectId,
          title,
          status,
+         suggested_status AS suggestedStatus,
          priority,
-         summary
+         summary,
+         source,
+         source_event_ids_json AS sourceEventIdsJson,
+         context_eligible AS contextEligible
        FROM tasks
        ORDER BY updated_at DESC, created_at DESC`
     ),
@@ -1580,7 +1730,8 @@ async function readSnapshot(db: SubMindSqlDatabase): Promise<SubMindStoreSnapsho
          linked_guidance_item_ids_json AS linkedGuidanceItemIdsJson,
          change_summary AS changeSummary,
          is_pinned AS isPinned,
-         is_edited AS isEdited
+         is_edited AS isEdited,
+         context_eligible AS contextEligible
        FROM memory_items
        ORDER BY
          CASE WHEN is_pinned IN ('1', 'true') THEN 1 ELSE 0 END DESC,
@@ -1605,7 +1756,8 @@ async function readSnapshot(db: SubMindSqlDatabase): Promise<SubMindStoreSnapsho
          policy_summary AS policySummary,
          linked_memory_item_ids_json AS linkedMemoryItemIdsJson,
          linked_event_ids_json AS linkedEventIdsJson,
-         linked_action_item_ids_json AS linkedActionItemIdsJson
+         linked_action_item_ids_json AS linkedActionItemIdsJson,
+         context_eligible AS contextEligible
        FROM guidance_items
        ORDER BY
          CASE state
@@ -1984,6 +2136,144 @@ export function createSqliteRepository(
       await ensureInitialized();
       return readSnapshot(db);
     },
+    async appendEvents(events) {
+      await ensureInitialized();
+      for (const event of events) {
+        const projects = await db.select<{ id: string }[]>(
+          "SELECT id FROM projects WHERE id = $1",
+          [event.projectId]
+        );
+        if (!projects[0]) {
+          throw new Error(`Project "${event.projectId}" was not found for event "${event.id}".`);
+        }
+        const safeEvent = redactSensitiveObject(event);
+        await db.execute(
+          `INSERT OR IGNORE INTO events
+           (id, created_at, updated_at, project_id, session_id, thread_id, task_id, file_change_id, guidance_item_id, action_item_id, memory_item_id, origin_type, event_type, category, node_category, timestamp, summary, metadata_json)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+          [
+            safeEvent.id,
+            safeEvent.createdAt,
+            safeEvent.updatedAt,
+            safeEvent.projectId,
+            safeEvent.sessionId ?? null,
+            safeEvent.threadId ?? null,
+            safeEvent.taskId ?? null,
+            safeEvent.fileChangeId ?? null,
+            safeEvent.guidanceItemId ?? null,
+            safeEvent.actionItemId ?? null,
+            safeEvent.memoryItemId ?? null,
+            safeEvent.originType,
+            safeEvent.eventType,
+            safeEvent.category,
+            safeEvent.nodeCategory,
+            safeEvent.timestamp,
+            safeEvent.summary,
+            JSON.stringify(safeEvent.metadata)
+          ]
+        );
+      }
+    },
+    async appendGeneratedProposals(batch: GeneratedProposalBatch) {
+      await ensureInitialized();
+      const snapshot = await readSnapshot(db);
+      validateGeneratedProposalBatch(snapshot, batch);
+      const existingTaskIds = new Set(snapshot.tasks.map((item) => item.id));
+      const existingMemoryIds = new Set(snapshot.memory.map((item) => item.id));
+      const existingGuidanceIds = new Set(snapshot.guidance.map((item) => item.id));
+
+      for (const item of batch.tasks ?? []) {
+        if (existingTaskIds.has(item.id)) {
+          continue;
+        }
+        const safe = redactSensitiveObject(item);
+        await db.execute(
+          `INSERT OR IGNORE INTO tasks
+           (id, created_at, updated_at, session_id, thread_id, project_id, title, status, suggested_status, priority, summary, source, source_event_ids_json, context_eligible)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, '0')`,
+          [
+            safe.id,
+            safe.createdAt,
+            safe.updatedAt,
+            safe.sessionId,
+            safe.threadId,
+            safe.projectId,
+            safe.title,
+            safe.status,
+            safe.suggestedStatus ?? null,
+            safe.priority,
+            safe.summary ?? null,
+            safe.source ?? null,
+            JSON.stringify(safe.sourceEventIds ?? [])
+          ]
+        );
+      }
+
+      for (const item of batch.memory) {
+        if (existingMemoryIds.has(item.id)) {
+          continue;
+        }
+        const safe = redactSensitiveObject(item);
+        await db.execute(
+          `INSERT OR IGNORE INTO memory_items
+           (id, created_at, updated_at, project_id, session_id, thread_id, bucket, status, summary, content, confidence, freshness, curation_state, source_event_ids_json, source_file_change_ids_json, linked_action_item_ids_json, linked_guidance_item_ids_json, change_summary, is_pinned, is_edited, context_eligible)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, '0')`,
+          [
+            safe.id,
+            safe.createdAt,
+            safe.updatedAt,
+            safe.projectId ?? null,
+            safe.sessionId ?? null,
+            safe.threadId ?? null,
+            safe.bucket,
+            safe.status,
+            safe.summary,
+            safe.content,
+            String(safe.confidence),
+            String(safe.freshness),
+            safe.curationState,
+            JSON.stringify(safe.sourceEventIds),
+            JSON.stringify(safe.sourceFileChangeIds),
+            JSON.stringify(safe.linkedActionItemIds),
+            JSON.stringify(safe.linkedGuidanceItemIds),
+            safe.changeSummary ?? null,
+            stringifyBoolean(safe.isPinned),
+            stringifyBoolean(safe.isEdited)
+          ]
+        );
+      }
+
+      for (const item of batch.guidance) {
+        if (existingGuidanceIds.has(item.id)) {
+          continue;
+        }
+        const safe = redactSensitiveObject(item);
+        await db.execute(
+          `INSERT OR IGNORE INTO guidance_items
+           (id, created_at, updated_at, project_id, session_id, thread_id, title, summary, rationale, state, source, confidence, evidence_summary, policy_summary, linked_memory_item_ids_json, linked_event_ids_json, linked_action_item_ids_json, context_eligible)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, '0')`,
+          [
+            safe.id,
+            safe.createdAt,
+            safe.updatedAt,
+            safe.projectId,
+            safe.sessionId ?? null,
+            safe.threadId ?? null,
+            safe.title,
+            safe.summary,
+            safe.rationale,
+            safe.state,
+            safe.source,
+            safe.confidence,
+            safe.evidenceSummary,
+            safe.policySummary,
+            JSON.stringify(safe.linkedMemoryItemIds),
+            JSON.stringify(safe.linkedEventIds),
+            JSON.stringify(safe.linkedActionItemIds)
+          ]
+        );
+      }
+    },
     async getSettingsConfig() {
       await ensureInitialized();
       return readSettingsConfig(db);
@@ -1991,6 +2281,64 @@ export function createSqliteRepository(
     async updateSettingsConfig(input) {
       await ensureInitialized();
       return writeSettingsConfig(db, input);
+    },
+    async updateProjectWorkspaceAliases(input: ProjectWorkspaceAliasesInput) {
+      await ensureInitialized();
+      const projectRows = await db.select<ProjectRow[]>(
+        `SELECT
+           id,
+           created_at AS createdAt,
+           updated_at AS updatedAt,
+           profile_id AS profileId,
+           name,
+           description,
+           summary,
+           workspace_path AS workspacePath,
+           workspace_aliases_json AS workspaceAliasesJson,
+           repository_remote AS repositoryRemote,
+           descriptors_json AS descriptorsJson
+         FROM projects
+         WHERE id = $1`,
+        [input.projectId]
+      );
+      const project = projectRows[0] ? mapProjectRow(projectRows[0]) : null;
+
+      if (!project) {
+        throw new Error(`Project "${input.projectId}" was not found.`);
+      }
+
+      const workspaceAliases = normalizeProjectWorkspaceAliases(
+        project.workspacePath,
+        input.workspaceAliases
+      );
+      const updatedAt = input.timestamp ?? now();
+      await db.execute(
+        `UPDATE projects
+         SET workspace_aliases_json = $1,
+             updated_at = $2
+         WHERE id = $3`,
+        [JSON.stringify(workspaceAliases), updatedAt, project.id]
+      );
+
+      if (isManagedRuntimeSource(await getAppStateValue(db, runtimeSourceKey))) {
+        await syncRuntimeSnapshotIntoDatabase(db, await readSnapshot(db));
+        const reconciledSnapshot = await readSnapshot(db);
+        const reconciledProject = reconciledSnapshot.projects.find(
+          (item) =>
+            item.workspacePath === project.workspacePath ||
+            item.workspaceAliases?.includes(project.workspacePath ?? "")
+        );
+
+        if (reconciledProject) {
+          return reconciledProject;
+        }
+      }
+
+      return {
+        ...project,
+        workspaceAliases,
+        updatedAt
+      };
     },
     async searchProjects(input = {}) {
       await ensureInitialized();
@@ -2116,6 +2464,18 @@ export function createSqliteRepository(
         ]
       );
 
+      const previousMemory = mapMemoryItemRow(existingMemory);
+      const nextMemory = mapMemoryItemRow({
+        ...existingMemory,
+        summary: safeInput.summary,
+        content: safeInput.content,
+        status: safeInput.status,
+        curationState: safeInput.curationState,
+        changeSummary: safeInput.changeSummary ?? null,
+        isPinned: stringifyBoolean(safeInput.isPinned),
+        isEdited: stringifyBoolean(safeInput.curationState === "edited"),
+        updatedAt: timestamp
+      });
       const eventRecord = createMemoryCurationEventRecord(
         existingMemory,
         safeInput,
@@ -2123,6 +2483,10 @@ export function createSqliteRepository(
         actor,
         fallbackProjectId
       );
+      const eventMetadata = parseObjectJson(eventRecord.metadataJson);
+      eventMetadata.previousEntity = redactSensitiveObject(previousMemory);
+      eventMetadata.nextEntity = redactSensitiveObject(nextMemory);
+      eventRecord.metadataJson = JSON.stringify(eventMetadata);
 
       await db.execute(
         `INSERT INTO events
@@ -2157,6 +2521,312 @@ export function createSqliteRepository(
         isEdited: stringifyBoolean(safeInput.curationState === "edited"),
         updatedAt: timestamp
       }));
+    },
+    async reviewGuidanceItem(input: GuidanceReviewInput) {
+      await ensureInitialized();
+      const snapshot = await readSnapshot(db);
+      const guidance = snapshot.guidance.find(
+        (item) => item.id === input.guidanceId
+      );
+      if (!guidance) {
+        throw new Error(`Guidance item "${input.guidanceId}" was not found.`);
+      }
+      if (guidance.state !== "candidate") {
+        throw new Error("Only candidate guidance can be reviewed.");
+      }
+      const timestamp = input.timestamp ?? now();
+      await db.execute(
+        "UPDATE guidance_items SET state = $1, updated_at = $2 WHERE id = $3",
+        [input.nextState, timestamp, guidance.id]
+      );
+      const event: Event = {
+        kind: "Event",
+        id: `event-guidance-review-${guidance.id}-${timestamp.replaceAll(/[^0-9]/g, "")}`,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        projectId: guidance.projectId,
+        ...(guidance.sessionId ? { sessionId: guidance.sessionId } : {}),
+        ...(guidance.threadId ? { threadId: guidance.threadId } : {}),
+        guidanceItemId: guidance.id,
+        originType: "user",
+        eventType: "guidance-review",
+        category: "guidance",
+        nodeCategory: "control",
+        timestamp,
+        summary: redactSensitiveText(
+          `Guidance ${guidance.title} was ${input.nextState} by the operator.`
+        ).value,
+        metadata: {
+          guidanceId: guidance.id,
+          previousState: guidance.state,
+          nextState: input.nextState,
+          previousEntity: redactSensitiveObject(guidance),
+          nextEntity: redactSensitiveObject({
+            ...guidance,
+            state: input.nextState,
+            updatedAt: timestamp
+          })
+        }
+      };
+      await insertEvent(db, event);
+      return redactSensitiveObject({
+        ...guidance,
+        state: input.nextState,
+        updatedAt: timestamp
+      });
+    },
+    async reviewTask(input: TaskReviewInput) {
+      await ensureInitialized();
+      const snapshot = await readSnapshot(db);
+      const task = snapshot.tasks.find((item) => item.id === input.taskId);
+      if (!task) {
+        throw new Error(`Task "${input.taskId}" was not found.`);
+      }
+      if (task.source !== "model" || task.status !== "proposed") {
+        throw new Error("Only proposed model-generated tasks can be reviewed.");
+      }
+      const timestamp = input.timestamp ?? now();
+      const nextStatus: Task["status"] =
+        input.decision === "reject"
+          ? "rejected"
+          : task.suggestedStatus ?? "queued";
+      await db.execute(
+        "UPDATE tasks SET status = $1, updated_at = $2 WHERE id = $3",
+        [nextStatus, timestamp, task.id]
+      );
+      const event: Event = {
+        kind: "Event",
+        id: `event-task-review-${task.id}-${timestamp.replaceAll(/[^0-9]/g, "")}`,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        projectId: task.projectId,
+        sessionId: task.sessionId,
+        threadId: task.threadId,
+        taskId: task.id,
+        originType: "user",
+        eventType: "task-review",
+        category: "work_change",
+        nodeCategory: "control",
+        timestamp,
+        summary: redactSensitiveText(
+          `Task ${task.title} was ${input.decision === "accept" ? `accepted as ${nextStatus}` : "rejected"} by the operator.`
+        ).value,
+        metadata: {
+          taskId: task.id,
+          previousStatus: task.status,
+          suggestedStatus: task.suggestedStatus ?? null,
+          nextStatus,
+          previousEntity: redactSensitiveObject(task),
+          nextEntity: redactSensitiveObject({
+            ...task,
+            status: nextStatus,
+            updatedAt: timestamp
+          })
+        }
+      };
+      await insertEvent(db, event);
+      return redactSensitiveObject({
+        ...task,
+        status: nextStatus,
+        updatedAt: timestamp
+      });
+    },
+    async setContextEligibility(input: ContextEligibilityInput) {
+      await ensureInitialized();
+      const snapshot = await readSnapshot(db);
+      const timestamp = input.timestamp ?? now();
+      let entity: MemoryItem | GuidanceItem | Task | undefined;
+      let table: string;
+      let ref: Pick<Event, "memoryItemId" | "guidanceItemId" | "taskId">;
+      let category: Event["category"];
+      if (input.entityKind === "MemoryItem") {
+        entity = snapshot.memory.find((item) => item.id === input.entityId);
+        table = "memory_items";
+        ref = { memoryItemId: input.entityId };
+        category = "memory";
+        if (
+          !entity ||
+          input.isEligible && !["active", "stale"].includes(entity.status)
+        ) {
+          throw new Error("Only active or stale memory can be made context-eligible.");
+        }
+      } else if (input.entityKind === "GuidanceItem") {
+        entity = snapshot.guidance.find((item) => item.id === input.entityId);
+        table = "guidance_items";
+        ref = { guidanceItemId: input.entityId };
+        category = "guidance";
+        if (
+          !entity ||
+          input.isEligible && ["candidate", "suppressed", "resolved"].includes(entity.state)
+        ) {
+          throw new Error("Only reviewed guidance can be made context-eligible.");
+        }
+      } else {
+        entity = snapshot.tasks.find((item) => item.id === input.entityId);
+        table = "tasks";
+        ref = { taskId: input.entityId };
+        category = "work_change";
+        if (
+          !entity ||
+          input.isEligible && !["queued", "active", "blocked"].includes(entity.status)
+        ) {
+          throw new Error("Only accepted, unresolved tasks can be made context-eligible.");
+        }
+      }
+      if (entity.contextEligible === input.isEligible) {
+        return;
+      }
+      const update = await db.execute(
+        `UPDATE ${table}
+         SET context_eligible = $1, updated_at = $2
+         WHERE id = $3 AND updated_at = $4 AND context_eligible = $5`,
+        [
+          stringifyBoolean(input.isEligible),
+          timestamp,
+          input.entityId,
+          entity.updatedAt,
+          stringifyBoolean(entity.contextEligible === true)
+        ]
+      );
+      if (update.rowsAffected !== 1) {
+        throw new Error("The proposal changed while context eligibility was being updated.");
+      }
+      const event: Event = {
+        kind: "Event",
+        id: `event-context-eligibility-${input.entityId}-${timestamp.replaceAll(/[^0-9]/g, "")}-${input.isEligible ? "on" : "off"}`,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        projectId: entity.projectId ?? "project-global",
+        ...("sessionId" in entity && entity.sessionId ? { sessionId: entity.sessionId } : {}),
+        ...("threadId" in entity && entity.threadId ? { threadId: entity.threadId } : {}),
+        ...ref,
+        originType: "user",
+        eventType: "context-eligibility-changed",
+        category,
+        nodeCategory: "control",
+        timestamp,
+        summary: `Context-bundle eligibility was ${input.isEligible ? "enabled" : "disabled"} for ${input.entityKind} ${entity.id}.`,
+        metadata: {
+          entityKind: input.entityKind,
+          entityId: entity.id,
+          previousEligibility: entity.contextEligible === true,
+          nextEligibility: input.isEligible
+        }
+      };
+      await insertEvent(db, event);
+    },
+    async revertProposalReview(input: RevertProposalReviewInput) {
+      await ensureInitialized();
+      const snapshot = await readSnapshot(db);
+      const event = snapshot.events.find((item) => item.id === input.eventId);
+      if (!event || !["memory-curated", "guidance-review", "task-review"].includes(event.eventType)) {
+        throw new Error("The selected history event cannot be reverted.");
+      }
+      const previous = event.metadata.previousEntity;
+      const next = event.metadata.nextEntity;
+      if (!previous || !next || typeof previous !== "object" || typeof next !== "object") {
+        throw new Error("The selected history event does not contain reversible state.");
+      }
+      const entityId = event.memoryItemId ?? event.guidanceItemId ?? event.taskId;
+      const currentCollection = event.memoryItemId
+        ? snapshot.memory
+        : event.guidanceItemId
+          ? snapshot.guidance
+          : snapshot.tasks;
+      const current = currentCollection.find((item) => item.id === entityId);
+      if (
+        !current ||
+        JSON.stringify(redactSensitiveObject(current)) !== JSON.stringify(next)
+      ) {
+        throw new Error("This proposal changed after that review; revert the latest history entry instead.");
+      }
+      const previousRecord = previous as Record<string, unknown>;
+      const nextRecord = next as Record<string, unknown>;
+      const timestamp = input.timestamp ?? now();
+      let update: SubMindSqlQueryResult;
+      if (event.memoryItemId) {
+        update = await db.execute(
+          `UPDATE memory_items
+           SET summary = $1, content = $2, status = $3, curation_state = $4,
+               change_summary = $5, is_pinned = $6, is_edited = $7,
+               context_eligible = $8, updated_at = $9
+           WHERE id = $10 AND updated_at = $11 AND summary = $12 AND content = $13
+             AND status = $14 AND curation_state = $15 AND is_pinned = $16
+             AND is_edited = $17 AND context_eligible = $18`,
+          [
+            previousRecord.summary,
+            previousRecord.content,
+            previousRecord.status,
+            previousRecord.curationState,
+            previousRecord.changeSummary ?? null,
+            stringifyBoolean(previousRecord.isPinned === true),
+            stringifyBoolean(previousRecord.isEdited === true),
+            stringifyBoolean(previousRecord.contextEligible === true),
+            timestamp,
+            event.memoryItemId,
+            nextRecord.updatedAt,
+            nextRecord.summary,
+            nextRecord.content,
+            nextRecord.status,
+            nextRecord.curationState,
+            stringifyBoolean(nextRecord.isPinned === true),
+            stringifyBoolean(nextRecord.isEdited === true),
+            stringifyBoolean(nextRecord.contextEligible === true)
+          ]
+        );
+      } else if (event.guidanceItemId) {
+        update = await db.execute(
+          `UPDATE guidance_items SET state = $1, context_eligible = $2, updated_at = $3
+           WHERE id = $4 AND updated_at = $5 AND state = $6 AND context_eligible = $7`,
+          [
+            previousRecord.state,
+            stringifyBoolean(previousRecord.contextEligible === true),
+            timestamp,
+            event.guidanceItemId,
+            nextRecord.updatedAt,
+            nextRecord.state,
+            stringifyBoolean(nextRecord.contextEligible === true)
+          ]
+        );
+      } else {
+        update = await db.execute(
+          `UPDATE tasks SET status = $1, context_eligible = $2, updated_at = $3
+           WHERE id = $4 AND updated_at = $5 AND status = $6 AND context_eligible = $7`,
+          [
+            previousRecord.status,
+            stringifyBoolean(previousRecord.contextEligible === true),
+            timestamp,
+            event.taskId,
+            nextRecord.updatedAt,
+            nextRecord.status,
+            stringifyBoolean(nextRecord.contextEligible === true)
+          ]
+        );
+      }
+      if (update.rowsAffected !== 1) {
+        throw new Error("The proposal changed while review history was being reverted.");
+      }
+      const revertedEvent: Event = {
+        kind: "Event",
+        id: `event-proposal-review-reverted-${event.id}-${timestamp.replaceAll(/[^0-9]/g, "")}`,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        projectId: event.projectId,
+        ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+        ...(event.threadId ? { threadId: event.threadId } : {}),
+        ...(event.taskId ? { taskId: event.taskId } : {}),
+        ...(event.guidanceItemId ? { guidanceItemId: event.guidanceItemId } : {}),
+        ...(event.memoryItemId ? { memoryItemId: event.memoryItemId } : {}),
+        originType: "user",
+        eventType: "proposal-review-reverted",
+        category: event.category,
+        nodeCategory: "control",
+        timestamp,
+        summary: `Operator reverted review history entry ${event.id}.`,
+        metadata: { sourceEventId: event.id }
+      };
+      await insertEvent(db, revertedEvent);
+      return redactSensitiveObject(revertedEvent);
     }
   };
 }
