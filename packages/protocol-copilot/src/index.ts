@@ -1,3 +1,4 @@
+import { annotateAgentWork, historyObservationCapabilities, type AgentAdapter } from "@submind/shared-schemas";
 import {
   createProjectIdFromWorkspacePath,
   getWorkspaceBaseName,
@@ -29,6 +30,7 @@ export interface CopilotRuntimeSessionRecord {
   id: string;
   title: string;
   workspacePath: string | null;
+  workspaceAliases?: string[];
   storageKey: string;
   source: "workspace" | "empty_window";
   createdAt: number;
@@ -50,6 +52,7 @@ interface RuntimeProjectBucket {
   id: string;
   key: string;
   workspacePath: string | null;
+  workspaceAliases: string[];
   source: CopilotRuntimeSessionRecord["source"];
   sessions: CopilotRuntimeSessionRecord[];
 }
@@ -241,6 +244,20 @@ function normalizeProjectWorkspacePath(
   return normalized || null;
 }
 
+function normalizeProjectWorkspaceAliases(
+  session: CopilotRuntimeSessionRecord
+): string[] {
+  const workspacePath = normalizeProjectWorkspacePath(session);
+
+  return [
+    ...new Set(
+      (session.workspaceAliases ?? [])
+        .map(normalizeWorkspacePath)
+        .filter((alias) => alias && alias !== workspacePath)
+    )
+  ];
+}
+
 function getProjectKey(session: CopilotRuntimeSessionRecord): string {
   const workspacePath = normalizeProjectWorkspacePath(session);
 
@@ -309,9 +326,13 @@ function groupSessionsByProject(
   for (const session of sessions) {
     const key = getProjectKey(session);
     const workspacePath = normalizeProjectWorkspacePath(session);
+    const workspaceAliases = normalizeProjectWorkspaceAliases(session);
     const existingBucket = buckets.get(key);
 
     if (existingBucket) {
+      existingBucket.workspaceAliases = [
+        ...new Set([...existingBucket.workspaceAliases, ...workspaceAliases])
+      ];
       existingBucket.sessions.push({
         ...session,
         ...(workspacePath ? { workspacePath } : { workspacePath: null })
@@ -323,6 +344,7 @@ function groupSessionsByProject(
       id: getProjectId(session),
       key,
       workspacePath,
+      workspaceAliases,
       source: session.source,
       sessions: [
         {
@@ -364,6 +386,9 @@ function buildProjectEntities(buckets: RuntimeProjectBucket[]): Project[] {
           newestSession.title || "VS Code Copilot chat activity."
         ),
         workspacePath: bucket.workspacePath,
+        ...(bucket.workspaceAliases.length > 0
+          ? { workspaceAliases: bucket.workspaceAliases }
+          : {}),
         descriptors,
         createdAt: toIsoDate(oldestSession.createdAt),
         updatedAt: toIsoDate(newestSession.updatedAt)
@@ -666,7 +691,7 @@ function buildFileChangeEntities(
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-export function createStoreSnapshotFromCopilotRuntimeFeed(
+function normalizeCopilotRuntimeFeed(
   feed: CopilotRuntimeFeed,
   now: number = Date.now()
 ): SubMindStoreSnapshot {
@@ -711,3 +736,14 @@ export function createStoreSnapshotFromCopilotRuntimeFeed(
     actions: []
   };
 }
+
+export const copilotAdapter: AgentAdapter<CopilotRuntimeFeed, SubMindStoreSnapshot> = {
+  harnessId: "copilot",
+  capabilities: historyObservationCapabilities,
+  normalize(feed, now = Date.now()) {
+    return annotateAgentWork(normalizeCopilotRuntimeFeed(feed, now), "copilot");
+  }
+};
+
+/** Compatibility entry point; all consumers pass through the shared adapter. */
+export const createStoreSnapshotFromCopilotRuntimeFeed = copilotAdapter.normalize;

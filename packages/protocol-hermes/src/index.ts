@@ -1,3 +1,4 @@
+import { annotateAgentWork, historyObservationCapabilities, type AgentAdapter } from "@submind/shared-schemas";
 import {
   createProjectGroupingKey,
   createProjectIdFromWorkspacePath,
@@ -687,7 +688,7 @@ function buildFileChangeEntities(
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-export function createStoreSnapshotFromHermesRuntimeFeed(
+function normalizeHermesRuntimeFeed(
   feed: HermesRuntimeFeed,
   now: number = Date.now()
 ): SubMindStoreSnapshot {
@@ -756,3 +757,27 @@ export function createHermesProtocolEnvelope(
     fileChanges
   };
 }
+
+export const hermesAdapter: AgentAdapter<HermesRuntimeFeed, SubMindStoreSnapshot> = {
+  harnessId: "hermes",
+  capabilities: historyObservationCapabilities,
+  normalize(feed, now = Date.now()) {
+    return annotateAgentWork(normalizeHermesRuntimeFeed(feed, now), "hermes");
+  }
+};
+
+/** Compatibility entry point; all consumers pass through the shared adapter. */
+export const createStoreSnapshotFromHermesRuntimeFeed = hermesAdapter.normalize;
+
+export {
+  createHermesSessionDeliveryAdapter,
+  createNativeHermesSessionDeliveryAdapter,
+  getHermesNativeDeliveryStatus,
+  hermesApiServerDefaultBaseUrl,
+  resolveHermesSessionId,
+  saveHermesNativeDeliverySettings,
+  type HermesNativeDeliveryStatus,
+  type HermesNativeInvoke,
+  type HermesNativeSettingsInput,
+  type HermesSessionDeliveryOptions
+} from "./session-delivery.js";

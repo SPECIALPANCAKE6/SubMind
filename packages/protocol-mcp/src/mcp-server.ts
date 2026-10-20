@@ -44,6 +44,7 @@ const contextRequestSchema = z
     projectId: z.string().trim().min(1).max(256).optional(),
     projectQuery: z.string().trim().min(1).max(512).optional(),
     threadId: z.string().trim().min(1).max(256).optional(),
+    consumerHarnessId: z.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/).optional(),
     prompt: z.string().trim().min(1).max(8_000),
     maxItems: z.number().int().min(1).max(20).optional(),
     maxTokens: z.number().int().min(100).max(4_000).optional(),
@@ -86,7 +87,7 @@ const tools: Tool[] = [
     name: "get_context_bundle",
     title: "Get Audited SubMind Context",
     description:
-      "Retrieve a bounded, secret-redacted context bundle for a project or thread. The tool result enters the requesting client's working context as untrusted evidence and includes exact source IDs and an audit event ID. A successful call appends a provenance audit event in SubMind.",
+      "Retrieve a bounded, secret-redacted context bundle for a project or thread. The response makes untrusted evidence available to the requesting client and includes exact source IDs and an audit event ID; model consumption is unverified. A successful call appends a provenance audit event in SubMind.",
     inputSchema: {
       type: "object",
       properties: {
@@ -105,6 +106,7 @@ const tools: Tool[] = [
           minLength: 1,
           maxLength: 256
         },
+        consumerHarnessId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]{0,63}$", description: "Optional self-reported harness ID; does not prove consumer identity." },
         prompt: {
           type: "string",
           minLength: 1,
@@ -260,6 +262,8 @@ export function createSubMindContextMcpServer(
       try {
         const bundle = await client.getContextBundle({
           prompt: parsed.data.prompt,
+          transport: "mcp",
+          ...(parsed.data.consumerHarnessId ? { consumerHarnessId: parsed.data.consumerHarnessId } : {}),
           ...(parsed.data.projectId ? { projectId: parsed.data.projectId } : {}),
           ...(parsed.data.projectQuery
             ? { projectQuery: parsed.data.projectQuery }

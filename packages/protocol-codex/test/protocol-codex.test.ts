@@ -66,7 +66,8 @@ describe("protocol-codex", () => {
     expect(snapshot.sessions).toHaveLength(1);
     expect(snapshot.threads).toHaveLength(1);
     expect(snapshot.tasks).toHaveLength(1);
-    expect(snapshot.events[0]?.originType).toBe("codex");
+    expect(snapshot.events[0]?.originType).toBe("agent");
+    expect(snapshot.events[0]?.metadata.harnessId).toBe("codex");
     expect(snapshot.fileChanges[0]?.fileType).toBe("source");
     expect(snapshot.actions).toHaveLength(0);
   });

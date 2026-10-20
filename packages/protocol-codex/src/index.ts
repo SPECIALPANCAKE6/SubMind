@@ -1,3 +1,4 @@
+import { annotateAgentWork, historyObservationCapabilities, type AgentAdapter } from "@submind/shared-schemas";
 import {
   createProjectGroupingKey,
   createProjectIdFromWorkspacePath,
@@ -42,7 +43,9 @@ export interface CodexRuntimeThreadRecord {
   id: string;
   title: string;
   cwd: string;
+  /** Unix timestamp in seconds (as emitted by the Rust runtime from Codex's SQLite). */
   createdAt: number;
+  /** Unix timestamp in seconds (as emitted by the Rust runtime from Codex's SQLite). */
   updatedAt: number;
   gitBranch: string | null;
   gitOriginUrl: string | null;
@@ -561,7 +564,7 @@ function buildFileChangeEntities(
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-export function createStoreSnapshotFromCodexRuntimeFeed(
+function normalizeCodexRuntimeFeed(
   feed: CodexRuntimeFeed,
   now: number = Date.now()
 ): SubMindStoreSnapshot {
@@ -638,3 +641,14 @@ export function createCodexProtocolEnvelope(
     fileChanges
   };
 }
+
+export const codexAdapter: AgentAdapter<CodexRuntimeFeed, SubMindStoreSnapshot> = {
+  harnessId: "codex",
+  capabilities: historyObservationCapabilities,
+  normalize(feed, now = Date.now()) {
+    return annotateAgentWork(normalizeCodexRuntimeFeed(feed, now), "codex");
+  }
+};
+
+/** Compatibility entry point; all consumers pass through the shared adapter. */
+export const createStoreSnapshotFromCodexRuntimeFeed = codexAdapter.normalize;

@@ -1,0 +1,1 @@
+{"dependencies":{"@submind/shared-schemas":"workspace:*","@submind/store":"workspace:*"},"exports":{".":{"default":"./dist/index.js","types":"./dist/index.d.ts"}},"main":"./dist/index.js","name":"@submind/protocol-muse","private":true,"type":"module","types":"./dist/index.d.ts","version":"0.1.0"}

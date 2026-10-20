@@ -1,6 +1,6 @@
 import type {
   ContextBundle,
-  ContextDatumKind,
+  ContextRequest,
   ExternalProjectSummary
 } from "@submind/shared-schemas";
 
@@ -24,15 +24,7 @@ export interface SearchProjectsResponse {
   projects: ExternalProjectSummary[];
 }
 
-export interface GetContextBundleRequest {
-  projectId?: string;
-  projectQuery?: string;
-  threadId?: string;
-  prompt: string;
-  maxItems?: number;
-  maxTokens?: number;
-  kinds?: ContextDatumKind[];
-}
+export type GetContextBundleRequest = ContextRequest;
 
 export interface SubMindApiClientOptions {
   baseUrl?: string;
